@@ -1,0 +1,97 @@
+{
+  "vector_sample.pdf": {
+    "2": {
+      "sheet_number": "G0.1",
+      "project_number": null,
+      "sheet_title": "General Notes"
+    },
+    "3": {
+      "sheet_number": "G0.2",
+      "project_number": null,
+      "sheet_title": "Specifications"
+    },
+    "4": {
+      "sheet_number": "G0.3",
+      "project_number": null,
+      "sheet_title": "Specifications"
+    },
+    "5": {
+      "sheet_number": "G0.4",
+      "project_number": null,
+      "sheet_title": "Specifications"
+    },
+    "6": {
+      "sheet_number": "G0.5",
+      "project_number": null,
+      "sheet_title": "Elevation"
+    },
+    "7": {
+      "sheet_number": "G0.6",
+      "project_number": null,
+      "sheet_title": "Schedule"
+    },
+    "8": {
+      "sheet_number": "A0.0",
+      "project_number": null,
+      "sheet_title": "Specifications"
+    },
+    "9": {
+      "sheet_number": "A1.0",
+      "project_number": null,
+      "sheet_title": "Demolition Plan"
+    },
+    "10": {
+      "sheet_number": "A1.1",
+      "project_number": null,
+      "sheet_title": "Demolition Plan"
+    },
+    "11": {
+      "sheet_number": "A1.2",
+      "project_number": null,
+      "sheet_title": "Reflected Ceiling Plan"
+    },
+    "12": {
+      "sheet_number": "A1.3",
+      "project_number": null,
+      "sheet_title": "Specifications"
+    },
+    "13": {
+      "sheet_number": "A2.0",
+      "project_number": null,
+      "sheet_title": "Demolition Plan"
+    }
+  },
+  "sample.pdf": {
+    "1": {
+      "sheet_number": null,
+      "project_number": "P27142",
+      "sheet_title": "COVER SHEET",
+      "is_cover_sheet": true
+    },
+    "2": {
+      "sheet_number": "A1.0",
+      "project_number": "P27142",
+      "sheet_title": "Code Review, Schedules and ADA Requirements"
+    },
+    "3": {
+      "sheet_number": "D2.0",
+      "project_number": "P27142",
+      "sheet_title": "Demolition Floor Plan"
+    },
+    "4": {
+      "sheet_number": "A2.0",
+      "project_number": "P27142",
+      "sheet_title": "Floor Plan"
+    },
+    "5": {
+      "sheet_number": "A2.1",
+      "project_number": "P27142",
+      "sheet_title": "Enlarged Floor Plan"
+    },
+    "6": {
+      "sheet_number": "A2.2",
+      "project_number": "P27142",
+      "sheet_title": "Reflected Ceiling Plan"
+    }
+  }
+}
