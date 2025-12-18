@@ -146,16 +146,13 @@ class SheetTitleExtractor:
 
         if page_image is not None:
             # Detect and crop title block for Vision API
+            # V4.2.2: Always create title_block_image so Vision API can be used
+            # as fallback when spatial extraction fails quality gate
             detection = self._region_detector.detect_title_block(page_image)
-            confidence = detection.get('confidence', 0)
-            if isinstance(confidence, str):
-                # Handle string confidence values like 'high', 'medium', 'low'
-                confidence = {'high': 0.9, 'medium': 0.7, 'low': 0.5}.get(confidence.lower(), 0.5)
-            if confidence > 0.5:
-                title_block_image = self._region_detector.crop_title_block(
-                    page_image, detection
-                )
-                title_block_bbox = detection.get('bbox')
+            title_block_image = self._region_detector.crop_title_block(
+                page_image, detection
+            )
+            title_block_bbox = detection.get('bbox')
 
         # Extract using layered approach
         result = self._extractor.extract_fields(

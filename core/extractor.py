@@ -1,17 +1,20 @@
 """
-Blueprint Processor V4.2.1 - Field Extractor
+Blueprint Processor V4.2.2 - Field Extractor
 Extracts structured fields from text using multiple strategies.
 Integrates with Validator for sheet title validation.
 """
 
 import re
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from constants import PATTERNS, LABELS, DISCIPLINE_CODES, TITLE_CONFIDENCE, REVIEW_THRESHOLD
+logger = logging.getLogger(__name__)
+
+from constants import PATTERNS, LABELS, DISCIPLINE_CODES, TITLE_CONFIDENCE, REVIEW_THRESHOLD, SHEET_NUMBER_BLACKLIST
 from validation.validator import Validator
 from core.drawing_index import DrawingIndexParser
 from core.spatial_extractor import SpatialExtractor
@@ -102,35 +105,77 @@ class Extractor:
         return result
 
     def extract_sheet_number(self, text: str, project_number: str = None) -> Optional[str]:
+        """
+        Extract sheet number from text with validation (V4.2.3).
+
+        Uses label-adjacent extraction first, then pattern fallback.
+        All candidates are validated to ensure they contain digits and aren't garbage.
+        """
         text_upper = text.upper()
         text_for_extraction = self.remove_index_sections(text_upper)
+        rejected_candidates = []  # Track rejected values for debugging
+
+        # Strategy 1: Label-adjacent extraction
         sheet_labels = ["SHEET NUMBER", "SHEET NO", "SHEET #", "SHEET", "DRAWING NO", "DWG NO", "DWG"]
         for label in sheet_labels:
             label_pattern = rf'{re.escape(label)}[:\s.#\n]*([A-Z]{{1,2}}[-.]?[\dO]{{1,3}}(?:\.[\dO]{{1,2}})?)'
             match = re.search(label_pattern, text_for_extraction, re.IGNORECASE)
             if match:
                 candidate = self._normalize_ocr_digits(match.group(1).upper())
+
+                # Skip if matches project number
                 if project_number and candidate in project_number:
                     continue
-                return candidate
+
+                # V4.2.3: Validate before returning
+                is_valid, reason = self._validator.is_valid_sheet_number(candidate)
+                if is_valid:
+                    return candidate
+                else:
+                    rejected_candidates.append((candidate, reason))
+                    logger.debug(f"Sheet number rejected (label): '{candidate}' reason={reason}")
+
+        # Strategy 2: Pattern fallback - find all candidates
         sheet_pattern = r'\b([A-Z]{1,2}[-.]?[\dO]{1,3}(?:\.[\dO]{1,2})?)\b'
         candidates = re.findall(sheet_pattern, text_for_extraction)
         valid_candidates = []
+
         for candidate in candidates:
             normalized = self._normalize_ocr_digits(candidate)
+
+            # Skip if matches project number
             if project_number and normalized in project_number:
                 continue
+
+            # Skip if too long
             if len(normalized) > 6:
                 continue
+
+            # Skip if looks like a project number (4+ consecutive digits)
             letter_part = re.match(r'^([A-Z]+)', normalized)
             if letter_part:
                 digit_part = normalized[len(letter_part.group(1)):]
                 if re.match(r'^-?\d{4,}$', digit_part.replace(".", "")):
                     continue
-            valid_candidates.append(normalized)
+
+            # V4.2.3: Validate candidate
+            is_valid, reason = self._validator.is_valid_sheet_number(normalized)
+            if is_valid:
+                valid_candidates.append(normalized)
+            else:
+                if (normalized, reason) not in rejected_candidates:
+                    rejected_candidates.append((normalized, reason))
+                    logger.debug(f"Sheet number rejected (pattern): '{normalized}' reason={reason}")
+
+        # Return best valid candidate (prefer those with decimals)
         if valid_candidates:
             with_decimal = [c for c in valid_candidates if "." in c]
             return with_decimal[0].upper() if with_decimal else valid_candidates[0].upper()
+
+        # Log summary of rejections for debugging
+        if rejected_candidates:
+            logger.debug(f"All sheet number candidates rejected: {rejected_candidates[:5]}")
+
         return None
 
     def extract_fields(self, text: str, text_blocks: Optional[List[Dict[str, Any]]] = None,
@@ -199,30 +244,63 @@ class Extractor:
                 title_found = True
 
         # Layer 2: Spatial Zone Detection (80% confidence) - Vector pages only
+        spatial_rejected_by_qg = False  # Track if we rejected spatial for Vision fallback
         if not title_found and page is not None:
             # Check if page is vector (has embedded text)
-            if self._spatial_extractor.is_vector_page(page):
+            is_vector = self._spatial_extractor.is_vector_page(page)
+            logger.debug(f"Layer 2: page={page_number}, is_vector={is_vector}")
+
+            if is_vector:
                 spatial_result = self._spatial_extractor.extract_title(
                     page=page,
                     title_block_bbox_pixels=title_block_bbox_pixels
                 )
+                logger.debug(f"Layer 2: spatial_result title='{spatial_result.get('title', '')[:50]}'")
+
                 if spatial_result["title"]:
-                    validation_result = self._validator.validate_sheet_title(
-                        title=spatial_result["title"], method="spatial", project_number=project_number
+                    # === V4.2.2: QUALITY GATE ===
+                    # Check if spatial result passes stricter quality criteria
+                    is_quality, quality_reason = self._validator.is_quality_title(
+                        spatial_result["title"],
+                        project_number
                     )
-                    if validation_result["is_valid"]:
-                        result["sheet_title"] = validation_result["title"]
-                        result["title_confidence"] = validation_result["confidence"]
-                        result["title_method"] = "spatial"
-                        result["needs_review"] = validation_result["needs_review"]
-                        result["extraction_details"]["sheet_title"] = "spatial"
-                        result["extraction_details"]["spatial_candidates"] = len(spatial_result.get("candidates", []))
-                        title_found = True
+                    logger.debug(f"Layer 2: quality_gate is_quality={is_quality}, reason={quality_reason}")
+
+                    if is_quality:
+                        # Passed quality gate - proceed with normal validation
+                        validation_result = self._validator.validate_sheet_title(
+                            title=spatial_result["title"],
+                            method="spatial",
+                            project_number=project_number
+                        )
+                        if validation_result["is_valid"]:
+                            result["sheet_title"] = validation_result["title"]
+                            result["title_confidence"] = validation_result["confidence"]
+                            result["title_method"] = "spatial"
+                            result["needs_review"] = validation_result["needs_review"]
+                            result["extraction_details"]["sheet_title"] = "spatial"
+                            result["extraction_details"]["spatial_candidates"] = len(spatial_result.get("candidates", []))
+                            title_found = True
+                    else:
+                        # Failed quality gate - log and fall through to Vision API
+                        spatial_rejected_by_qg = True
+                        result["extraction_details"]["spatial_rejected"] = quality_reason
+                        result["extraction_details"]["spatial_attempted"] = spatial_result["title"][:50]
+                        logger.info(
+                            f"Quality gate REJECTED spatial: '{spatial_result['title'][:40]}' "
+                            f"reason={quality_reason} - will try Vision API"
+                        )
+                        # title_found stays False - will try Vision API next
 
         # Layer 3: Vision API (90% confidence) - When Layers 1-2 fail
+        logger.debug(f"Layer 3: title_found={title_found}, title_block_image={'exists' if title_block_image else 'None'}, is_available={self._vision_extractor.is_available()}")
         if not title_found and title_block_image is not None:
             if self._vision_extractor.is_available():
+                # Log if this is a fallback from rejected spatial
+                if spatial_rejected_by_qg:
+                    logger.info(f"Vision API fallback triggered after spatial rejection")
                 vision_result = self._vision_extractor.extract_title(title_block_image)
+                logger.debug(f"Layer 3: vision_result title='{vision_result.get('title', '')}'")
                 if vision_result["title"]:
                     validation_result = self._validator.validate_sheet_title(
                         title=vision_result["title"], method="vision_api", project_number=project_number
@@ -237,6 +315,8 @@ class Extractor:
                         title_found = True
                 elif vision_result.get("error"):
                     result["extraction_details"]["vision_error"] = vision_result["error"]
+            else:
+                logger.warning(f"Layer 3: Vision API not available, skipping")
 
         # Layer 4: Pattern matching fallback (70% confidence)
         if not title_found:

@@ -253,6 +253,29 @@ class VisionExtractor:
                 "error": error_msg
             }
 
+    def _resize_image_if_needed(self, image: Image.Image, max_size: int = 7500) -> Image.Image:
+        """
+        Resize image if any dimension exceeds max_size.
+
+        Args:
+            image: PIL Image
+            max_size: Maximum dimension in pixels (default 7500 for safety margin under 8000)
+
+        Returns:
+            Resized PIL Image or original if within limits
+        """
+        width, height = image.size
+        if width <= max_size and height <= max_size:
+            return image
+
+        # Calculate scale factor
+        scale = min(max_size / width, max_size / height)
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+
+        logger.debug(f"Resizing image from {width}x{height} to {new_width}x{new_height}")
+        return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
     def _call_vision_api(self, image: Image.Image) -> str:
         """
         Make the actual Vision API call.
@@ -264,6 +287,9 @@ class VisionExtractor:
             Extracted title string or "UNKNOWN"
         """
         import base64
+
+        # Resize image if needed to stay under API limits (8000 pixels max)
+        image = self._resize_image_if_needed(image)
 
         # Convert PIL Image to base64
         img_bytes = io.BytesIO()

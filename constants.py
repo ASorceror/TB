@@ -156,7 +156,96 @@ TITLE_GARBAGE_PATTERNS: List[re.Pattern] = [
     re.compile(r'\bLLC\b|\bINC\b|\bCORP\b|\bLTD\b', re.IGNORECASE),
     re.compile(r'www\.', re.IGNORECASE),
     re.compile(r'@'),  # Email addresses
+
+    # === V4.2.2 QUALITY GATE PATTERNS ===
+
+    # Project descriptors (248 occurrences in production)
+    re.compile(r'Gmp[/\s]?permit', re.IGNORECASE),
+    re.compile(r'permit\s*set', re.IGNORECASE),
+
+    # Spec section headers (78 occurrences)
+    re.compile(r'^Part\s+\d+', re.IGNORECASE),
+    re.compile(r'End\s+of\s+Section', re.IGNORECASE),
+    re.compile(r'Contract,?\s+apply', re.IGNORECASE),
+
+    # Pure numbers or sheet-number-like patterns
+    re.compile(r'^\d{3,5}$'),  # "1425", "60601"
+    re.compile(r'^[A-Z]{1,2}[-.]?\d{1,3}(\.\d{1,2})?$', re.IGNORECASE),  # "A2.0", "S-101"
+
+    # Institution/Organization names
+    re.compile(r'\bUniversity\b', re.IGNORECASE),
+    re.compile(r'\bCollege\b', re.IGNORECASE),
+    re.compile(r'Recreation\s*Center', re.IGNORECASE),
+    re.compile(r'Ball\s*State', re.IGNORECASE),
+
+    # Company names / Commercial patterns
+    re.compile(r'Northern\s*Tool', re.IGNORECASE),
+    re.compile(r'\+equipment', re.IGNORECASE),
+    re.compile(r'Baseball\s*Building', re.IGNORECASE),
+
+    # Address patterns
+    re.compile(r'^\d+\s+[NSEW]\.?\s+\w+', re.IGNORECASE),  # "955 N Larrabee"
+    re.compile(r'\b(Street|St|Road|Rd|Avenue|Ave|Boulevard|Blvd|Drive|Dr)\b', re.IGNORECASE),
+    re.compile(r'Larrabee', re.IGNORECASE),
+    re.compile(r'Woodward', re.IGNORECASE),
+    re.compile(r'Frontage\s*Rd', re.IGNORECASE),
+    re.compile(r'Loop\s+\d+', re.IGNORECASE),
+
+    # Scale notations mistaken as titles
+    re.compile(r"^\d+['\"]?\s*[-=]\s*\d+", re.IGNORECASE),  # "0'-0" = +13.00'"
+    re.compile(r'^C\.?c\.?d\.?$', re.IGNORECASE),
+
+    # Partial sentences / fragments
+    re.compile(r'manufacturers?\s+specified', re.IGNORECASE),
+    re.compile(r'site/platform', re.IGNORECASE),
+    re.compile(r'^knowledge,?$', re.IGNORECASE),
+    re.compile(r'^equipment[,.]?$', re.IGNORECASE),
+    re.compile(r'^urban$', re.IGNORECASE),
+    re.compile(r'^in\s+this\s+section', re.IGNORECASE),
+
+    # Corridor/Location names (not drawing titles)
+    re.compile(r'^(North|South|East|West)\s+Corridor$', re.IGNORECASE),
+    re.compile(r'^Germantown$', re.IGNORECASE),
+    re.compile(r'^Graceland\s+Avenue$', re.IGNORECASE),
 ]
+
+# V4.2.2: Single keywords that are NOT valid titles on their own
+# These require additional context (e.g., "Floor Plan" valid, "Plan" alone invalid)
+QUALITY_SINGLE_KEYWORD_REJECTS: List[str] = [
+    'SECTION',
+    'PLAN',
+    'ELEVATION',
+    'ELEVATIONS',
+    'DETAIL',
+    'DETAILS',
+    'SCHEDULE',
+    'SCHEDULES',
+    'DIAGRAM',
+    'SPECIFICATIONS',
+    'SPECIFICATION',
+    'DEMOLITION',
+    'FOUNDATION',
+    'FLOOR',
+    'MECHANICAL',
+    'ELECTRICAL',
+    'PLUMBING',
+    'HVAC',
+    'STRUCTURAL',
+    'GENERAL',
+    'INTERIOR',
+    'EXTERIOR',
+    'NOTES',
+    'LEGEND',
+    'INDEX',
+]
+
+# V4.2.2: Quality Gate thresholds
+QUALITY_GATE_THRESHOLDS = {
+    'min_length': 3,                    # Minimum characters
+    'min_words_without_keyword': 2,     # If no keyword, need at least 2 words
+    'min_length_single_word': 15,       # Single word must be 15+ chars if no keyword
+    'max_length': 70,                   # Maximum characters (same as existing)
+}
 
 # Valid title keywords - presence indicates legitimate sheet title (case-insensitive)
 VALID_TITLE_KEYWORDS: List[str] = [
@@ -232,3 +321,34 @@ FUZZY_MATCH_THRESHOLD: float = 0.80
 
 # Maximum pages to search for drawing index
 MAX_INDEX_SEARCH_PAGES: int = 5
+
+# =============================================================================
+# SECTION 4.10: SHEET NUMBER VALIDATION (V4.2.3)
+# =============================================================================
+
+# Strict regex pattern for sheet numbers - REQUIRES at least one digit
+# Pattern: 1-2 letters + optional separator + 1-4 digits + optional decimal
+SHEET_NUMBER_STRICT_PATTERN = re.compile(r'^[A-Z]{1,2}[-.]?\d{1,4}(?:\.\d{1,2})?$', re.IGNORECASE)
+
+# Blacklist of known garbage values that slip through pattern matching
+SHEET_NUMBER_BLACKLIST = {
+    # Two-letter garbage (no digits) - from OCR pattern [\dO] matching "O" as digit
+    "TO", "NO", "SO", "RO", "CO", "FO", "DO", "GO", "PO", "MO",
+    "LO", "WO", "BO", "HO", "OO", "YO", "IO", "UO", "EO", "AO",
+    "AT", "AS", "BY", "IF", "IN", "IS", "IT", "OF", "ON", "OR",
+    "UP", "AN", "BE", "GO", "HE", "ME", "MY", "OK", "OX",
+    "US", "WE",
+
+    # Abbreviations with periods (Top Of, Not Otherwise, etc.)
+    "T.O", "N.O", "F.O", "R.O", "P.O", "B.O", "C.O", "D.O", "S.O",
+    "T.O.", "N.O.", "F.O.", "R.O.", "P.O.", "B.O.", "C.O.", "D.O.", "S.O.",
+
+    # Common OCR/extraction errors
+    "TA4", "NO.", "SH", "DW", "DWG", "REV", "REF",
+
+    # Common words that might slip through
+    "ADD", "ALL", "AND", "ARE", "BUT", "CAN", "FOR", "HAD", "HAS",
+    "HER", "HIM", "HIS", "HOW", "ITS", "LET", "MAY", "NEW", "NOT",
+    "NOW", "OLD", "OUR", "OUT", "OWN", "SAY", "SHE", "THE", "TOO",
+    "TRY", "TWO", "USE", "WAY", "WHO", "WHY", "YET", "YOU",
+}

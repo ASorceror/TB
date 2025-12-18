@@ -12,7 +12,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from constants import (
     PATTERNS, TITLE_GARBAGE_PATTERNS, VALID_TITLE_KEYWORDS,
-    TITLE_ACRONYMS, TITLE_LENGTH, TITLE_CONFIDENCE, REVIEW_THRESHOLD
+    TITLE_ACRONYMS, TITLE_LENGTH, TITLE_CONFIDENCE, REVIEW_THRESHOLD,
+    QUALITY_SINGLE_KEYWORD_REJECTS, QUALITY_GATE_THRESHOLDS,
+    SHEET_NUMBER_BLACKLIST, SHEET_NUMBER_STRICT_PATTERN
 )
 
 
@@ -25,6 +27,144 @@ class Validator:
     def __init__(self):
         """Initialize the Validator."""
         pass
+
+    def is_valid_sheet_number(self, value: str, log_rejection: bool = False) -> Tuple[bool, str]:
+        """
+        Validate a sheet number candidate (V4.2.3).
+
+        A valid sheet number:
+        1. Is not None or empty
+        2. Is 2-10 characters long
+        3. Starts with a letter A-Z
+        4. Contains at least one digit (0-9) - CRITICAL
+        5. Is NOT in the blacklist
+        6. Matches the strict regex pattern
+
+        Args:
+            value: The sheet number candidate to validate
+            log_rejection: If True, log rejected candidates for debugging
+
+        Returns:
+            Tuple of (is_valid: bool, reason: str)
+        """
+        # Check None/empty
+        if not value:
+            return (False, "empty_or_none")
+
+        value_clean = value.strip().upper()
+
+        # Check length (2-10 characters)
+        if len(value_clean) < 2:
+            return (False, f"too_short:{len(value_clean)}")
+        if len(value_clean) > 10:
+            return (False, f"too_long:{len(value_clean)}")
+
+        # Must start with a letter A-Z
+        if not value_clean[0].isalpha():
+            return (False, "no_letter_prefix")
+
+        # CRITICAL: Must contain at least one digit (0-9)
+        if not any(c.isdigit() for c in value_clean):
+            return (False, "no_digits")
+
+        # Check blacklist
+        if value_clean in SHEET_NUMBER_BLACKLIST:
+            return (False, f"blacklisted:{value_clean}")
+
+        # Also check with periods stripped for blacklist
+        value_no_periods = value_clean.replace(".", "")
+        if value_no_periods in SHEET_NUMBER_BLACKLIST:
+            return (False, f"blacklisted:{value_no_periods}")
+
+        # Check strict pattern match
+        if not SHEET_NUMBER_STRICT_PATTERN.match(value_clean):
+            return (False, "pattern_mismatch")
+
+        return (True, "valid")
+
+    def is_quality_title(self, title: str, project_number: str = None) -> Tuple[bool, str]:
+        """
+        Quality Gate: Stricter validation for spatial extraction results.
+
+        This is MORE strict than validate_sheet_title() because spatial
+        extraction often picks prominent text that isn't actually a title.
+
+        Args:
+            title: The extracted title to evaluate
+            project_number: Optional project number to check for contamination
+
+        Returns:
+            Tuple of (is_quality: bool, reason: str)
+            - is_quality: True if title passes quality gate
+            - reason: Explanation for the decision (for logging/debugging)
+
+        Quality Criteria:
+            1. Not empty or too short (< 3 chars)
+            2. Does not match any garbage pattern
+            3. Not a single rejected keyword
+            4. Has a valid keyword + context, OR is long enough with multiple words
+        """
+        # Handle empty/None
+        if not title:
+            return (False, "empty_title")
+
+        title_clean = title.strip()
+
+        if len(title_clean) < QUALITY_GATE_THRESHOLDS['min_length']:
+            return (False, f"too_short:{len(title_clean)}")
+
+        if len(title_clean) > QUALITY_GATE_THRESHOLDS['max_length']:
+            return (False, f"too_long:{len(title_clean)}")
+
+        title_upper = title_clean.upper()
+
+        # Check for contamination with project number
+        if project_number and title_clean == project_number:
+            return (False, "matches_project_number")
+
+        # Check garbage patterns
+        for pattern in TITLE_GARBAGE_PATTERNS:
+            if pattern.search(title_clean):
+                # Get a short version of the pattern for logging
+                pattern_str = pattern.pattern[:30].replace('\\', '')
+                return (False, f"garbage_pattern:{pattern_str}")
+
+        # Check single keyword rejects
+        if title_upper in QUALITY_SINGLE_KEYWORD_REJECTS:
+            return (False, f"single_keyword:{title_upper}")
+
+        # Check for valid keywords
+        has_keyword = self._has_valid_keyword(title_clean)
+        word_count = len(title_clean.split())
+
+        # PASS: Has keyword AND has context (2+ words)
+        if has_keyword and word_count >= 2:
+            return (True, f"keyword_with_context:{word_count}_words")
+
+        # PASS: Has keyword AND is long enough (single word but 15+ chars)
+        if has_keyword and len(title_clean) >= QUALITY_GATE_THRESHOLDS['min_length_single_word']:
+            return (True, f"keyword_long:{len(title_clean)}_chars")
+
+        # FAIL: Has keyword but no context
+        if has_keyword and word_count == 1:
+            return (False, f"keyword_no_context:{title_upper}")
+
+        # No keyword - stricter requirements
+        # PASS: Multiple words AND reasonable length
+        if word_count >= QUALITY_GATE_THRESHOLDS['min_words_without_keyword']:
+            if len(title_clean) >= 10:
+                # Additional check: reject proper noun patterns without keywords
+                # Pattern: "Ball State University", "Recreation Center"
+                # These look like "Title Case Names" not drawing titles
+                words = title_clean.split()
+                capitalized_words = sum(1 for w in words if len(w) > 1 and w[0].isupper() and w[1:].islower())
+                if capitalized_words == len(words) and not has_keyword:
+                    # All words are Title Case with no keyword - likely a name
+                    return (False, f"proper_noun_pattern:{title_clean[:20]}")
+                return (True, f"multi_word_no_keyword:{word_count}_words")
+
+        # Default: reject
+        return (False, "insufficient_context")
 
     def validate(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
