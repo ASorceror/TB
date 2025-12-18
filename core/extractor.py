@@ -1,7 +1,13 @@
 """
-Blueprint Processor V4.2.2 - Field Extractor
+Blueprint Processor V4.2.4 - Field Extractor
 Extracts structured fields from text using multiple strategies.
 Integrates with Validator for sheet title validation.
+
+V4.2.4 Changes:
+- Apply quality gate to pattern extraction (same as spatial)
+- Add TITLE_LABEL_BLACKLIST to reject label text extracted as titles
+- Fixes single-keyword garbage (Elevations, Sections, Details)
+- Fixes label-text garbage (Project Number, Plot Date, Scale)
 """
 
 import re
@@ -14,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 logger = logging.getLogger(__name__)
 
-from constants import PATTERNS, LABELS, DISCIPLINE_CODES, TITLE_CONFIDENCE, REVIEW_THRESHOLD, SHEET_NUMBER_BLACKLIST
+from constants import PATTERNS, LABELS, DISCIPLINE_CODES, TITLE_CONFIDENCE, REVIEW_THRESHOLD, SHEET_NUMBER_BLACKLIST, TITLE_LABEL_BLACKLIST
 from validation.validator import Validator
 from core.drawing_index import DrawingIndexParser
 from core.spatial_extractor import SpatialExtractor
@@ -319,19 +325,39 @@ class Extractor:
                 logger.warning(f"Layer 3: Vision API not available, skipping")
 
         # Layer 4: Pattern matching fallback (70% confidence)
+        # V4.2.4: Apply quality gate to pattern results (same as spatial)
         if not title_found:
             raw_title = self._extract_sheet_title(text)
-            validation_result = self._validator.validate_sheet_title(
-                title=raw_title, method="pattern", project_number=project_number
-            )
-            result["sheet_title"] = validation_result["title"]
-            result["title_confidence"] = validation_result["confidence"]
-            result["title_method"] = "pattern" if validation_result["is_valid"] else None
-            result["needs_review"] = validation_result["needs_review"]
-            if validation_result["is_valid"]:
-                result["extraction_details"]["sheet_title"] = "pattern_validated"
-            elif validation_result["rejection_reason"]:
-                result["extraction_details"]["sheet_title_rejected"] = validation_result["rejection_reason"]
+
+            # V4.2.4: Apply quality gate to pattern results
+            if raw_title:
+                is_quality, quality_reason = self._validator.is_quality_title(
+                    raw_title, project_number
+                )
+                if not is_quality:
+                    logger.debug(f"Pattern title rejected by quality gate: '{raw_title}' - {quality_reason}")
+                    result["extraction_details"]["pattern_rejected_qg"] = quality_reason
+                    result["extraction_details"]["pattern_attempted"] = raw_title[:50] if len(raw_title) > 50 else raw_title
+                    raw_title = None  # Reject garbage, will result in null title
+
+            if raw_title:
+                validation_result = self._validator.validate_sheet_title(
+                    title=raw_title, method="pattern", project_number=project_number
+                )
+                result["sheet_title"] = validation_result["title"]
+                result["title_confidence"] = validation_result["confidence"]
+                result["title_method"] = "pattern" if validation_result["is_valid"] else None
+                result["needs_review"] = validation_result["needs_review"]
+                if validation_result["is_valid"]:
+                    result["extraction_details"]["sheet_title"] = "pattern_validated"
+                elif validation_result["rejection_reason"]:
+                    result["extraction_details"]["sheet_title_rejected"] = validation_result["rejection_reason"]
+            else:
+                # No valid title after quality gate
+                result["sheet_title"] = None
+                result["title_confidence"] = 0.0
+                result["title_method"] = None
+                result["needs_review"] = True
         if result["sheet_number"]:
             result["discipline"] = DISCIPLINE_CODES.get(result["sheet_number"][0].upper(), "Unknown")
         return result
@@ -397,51 +423,78 @@ class Extractor:
         return None if title.upper() in ["TITLE","SHEET TITLE","DRAWING TITLE"] else title.strip()
 
     def _extract_sheet_title(self, text: str) -> Optional[str]:
+        """
+        Extract sheet title from text using pattern matching.
+        V4.2.4: Added label blacklist check to reject field labels mistaken as titles.
+        """
         if not text:
             return None
         text_clean = text.strip()
         text_upper = text_clean.upper()
+        extracted_title = None
+
+        # Strategy 1: Label-adjacent extraction
         for label_pattern in [r'SHEET\s*TITLE[:\s]+', r'DRAWING\s*TITLE[:\s]+', r'TITLE[:\s]+']:
             match = re.search(label_pattern + r'([A-Za-z][A-Za-z0-9\s,&\-\.]+)', text_clean, re.IGNORECASE)
             if match:
                 title = self._clean_sheet_title(match.group(1).strip())
                 if title and len(title) >= 3:
-                    return title
-        title_patterns = [
-            r'\b(CODE\s+REVIEW[,\s]+SCHEDULES?\s+AND\s+ADA\s+REQUIREMENTS?)\b',
-            r'\b(REFLECTED\s+CEILING\s+PLAN)\b', r'\b(DEMOLITION\s+FLOOR\s+PLAN)\b',
-            r'\b(ENLARGED\s+FLOOR\s+PLAN)\b', r'\b(LIFE\s+SAFETY\s+PLAN)\b', r'\b(DEMOLITION\s+PLAN)\b',
-            r'\b((?:FIRST|SECOND|THIRD|FOURTH|FIFTH|GROUND|BASEMENT|MAIN|UPPER|LOWER|MEZZANINE|PARTIAL)\s+FLOOR\s+PLAN)\b',
-            r'\b(FLOOR\s+PLAN)\b', r'\b(CEILING\s+PLAN)\b', r'\b(ROOF\s+PLAN)\b',
-            r'\b(SITE\s+PLAN)\b', r'\b(FOUNDATION\s+PLAN)\b',
-            r'\b((?:NORTH|SOUTH|EAST|WEST|FRONT|REAR|SIDE|INTERIOR|EXTERIOR|BUILDING)\s+ELEVATIONS?)\b',
-            r'\b(ELEVATIONS?)\b', r'\b((?:BUILDING|WALL|TYPICAL|DETAIL)\s+SECTIONS?)\b', r'\b(SECTIONS?)\b',
-            r'\b((?:WALL|DOOR|WINDOW|STAIR|MILLWORK|CABINET|CEILING|FLOOR|ROOF)\s+DETAILS?)\b', r'\b(DETAILS?)\b',
-            r'\b((?:DOOR|WINDOW|ROOM|FINISH|HARDWARE|FIXTURE|EQUIPMENT)\s+SCHEDULES?)\b', r'\b(SCHEDULES?)\b',
-            r'\b(GENERAL\s+NOTES)\b', r'\b(SPECIFICATIONS?)\b', r'\b(COVER\s+SHEET)\b', r'\b(PLAN)\b']
-        for pattern in title_patterns:
-            match = re.search(pattern, text_upper)
-            if match and len(match.group(1).strip()) >= 3:
-                return match.group(1).strip()
-        split_patterns = [r'(CODE\s+REVIEW,?)\s*\n\s*(SCHEDULES?\s+AND)\s*\n?\s*(ADA\s+REQUIREMENTS?)',
-            r'(REFLECTED\s+CEILING)\s*\n\s*(PLAN)', r'(DEMOLITION\s+FLOOR)\s*\n\s*(PLAN)',
-            r'(ENLARGED\s+FLOOR)\s*\n\s*(PLAN)', r'(FLOOR)\s*\n\s*(PLAN)', r'(CEILING)\s*\n\s*(PLAN)']
-        for pattern in split_patterns:
-            match = re.search(pattern, text_upper)
-            if match:
-                title = ' '.join(g for g in match.groups() if g)
-                if len(title) >= 3:
-                    return title
-        addr_match = re.search(r'(?:IL|ILLINOIS)\s+\d{5}\s*\n+(.*?)(?=PROJECT|SHEET\s*NO|$)', text_clean, re.IGNORECASE|re.DOTALL)
-        if addr_match:
-            lines = [l.strip() for l in addr_match.group(1).strip().split('\n') if l.strip() and len(l.strip())>=3
-                     and not re.match(r'^(PROJECT|SHEET|SCALE|DATE|DRAWN|CHECKED|APPROVED)[:\s]*$', l.strip(), re.I)
-                     and not re.match(r'^[\W\d]+$', l.strip())]
-            if lines:
-                potential = re.sub(r'\s+', ' ', ' '.join(lines[:3])).strip()
-                if len(potential) >= 3:
-                    return potential
-        return None
+                    extracted_title = title
+                    break
+
+        # Strategy 2: Pattern matching for known title formats
+        if not extracted_title:
+            title_patterns = [
+                r'\b(CODE\s+REVIEW[,\s]+SCHEDULES?\s+AND\s+ADA\s+REQUIREMENTS?)\b',
+                r'\b(REFLECTED\s+CEILING\s+PLAN)\b', r'\b(DEMOLITION\s+FLOOR\s+PLAN)\b',
+                r'\b(ENLARGED\s+FLOOR\s+PLAN)\b', r'\b(LIFE\s+SAFETY\s+PLAN)\b', r'\b(DEMOLITION\s+PLAN)\b',
+                r'\b((?:FIRST|SECOND|THIRD|FOURTH|FIFTH|GROUND|BASEMENT|MAIN|UPPER|LOWER|MEZZANINE|PARTIAL)\s+FLOOR\s+PLAN)\b',
+                r'\b(FLOOR\s+PLAN)\b', r'\b(CEILING\s+PLAN)\b', r'\b(ROOF\s+PLAN)\b',
+                r'\b(SITE\s+PLAN)\b', r'\b(FOUNDATION\s+PLAN)\b',
+                r'\b((?:NORTH|SOUTH|EAST|WEST|FRONT|REAR|SIDE|INTERIOR|EXTERIOR|BUILDING)\s+ELEVATIONS?)\b',
+                r'\b(ELEVATIONS?)\b', r'\b((?:BUILDING|WALL|TYPICAL|DETAIL)\s+SECTIONS?)\b', r'\b(SECTIONS?)\b',
+                r'\b((?:WALL|DOOR|WINDOW|STAIR|MILLWORK|CABINET|CEILING|FLOOR|ROOF)\s+DETAILS?)\b', r'\b(DETAILS?)\b',
+                r'\b((?:DOOR|WINDOW|ROOM|FINISH|HARDWARE|FIXTURE|EQUIPMENT)\s+SCHEDULES?)\b', r'\b(SCHEDULES?)\b',
+                r'\b(GENERAL\s+NOTES)\b', r'\b(SPECIFICATIONS?)\b', r'\b(COVER\s+SHEET)\b', r'\b(PLAN)\b']
+            for pattern in title_patterns:
+                match = re.search(pattern, text_upper)
+                if match and len(match.group(1).strip()) >= 3:
+                    extracted_title = match.group(1).strip()
+                    break
+
+        # Strategy 3: Split patterns for multi-line titles
+        if not extracted_title:
+            split_patterns = [r'(CODE\s+REVIEW,?)\s*\n\s*(SCHEDULES?\s+AND)\s*\n?\s*(ADA\s+REQUIREMENTS?)',
+                r'(REFLECTED\s+CEILING)\s*\n\s*(PLAN)', r'(DEMOLITION\s+FLOOR)\s*\n\s*(PLAN)',
+                r'(ENLARGED\s+FLOOR)\s*\n\s*(PLAN)', r'(FLOOR)\s*\n\s*(PLAN)', r'(CEILING)\s*\n\s*(PLAN)']
+            for pattern in split_patterns:
+                match = re.search(pattern, text_upper)
+                if match:
+                    title = ' '.join(g for g in match.groups() if g)
+                    if len(title) >= 3:
+                        extracted_title = title
+                        break
+
+        # Strategy 4: Address-adjacent extraction
+        if not extracted_title:
+            addr_match = re.search(r'(?:IL|ILLINOIS)\s+\d{5}\s*\n+(.*?)(?=PROJECT|SHEET\s*NO|$)', text_clean, re.IGNORECASE|re.DOTALL)
+            if addr_match:
+                lines = [l.strip() for l in addr_match.group(1).strip().split('\n') if l.strip() and len(l.strip())>=3
+                         and not re.match(r'^(PROJECT|SHEET|SCALE|DATE|DRAWN|CHECKED|APPROVED)[:\s]*$', l.strip(), re.I)
+                         and not re.match(r'^[\W\d]+$', l.strip())]
+                if lines:
+                    potential = re.sub(r'\s+', ' ', ' '.join(lines[:3])).strip()
+                    if len(potential) >= 3:
+                        extracted_title = potential
+
+        # V4.2.4: Reject if extracted text is a label, not a title
+        if extracted_title:
+            title_upper = extracted_title.upper().strip()
+            if title_upper in TITLE_LABEL_BLACKLIST:
+                logger.debug(f"Title rejected - is label text: '{extracted_title}'")
+                return None
+
+        return extracted_title
 
     def extract_all_matches(self, text: str) -> Dict[str, List[str]]:
         return {field: (pattern.findall(text.upper()) if field=="sheet_number" else pattern.findall(text)) for field, pattern in PATTERNS.items()}

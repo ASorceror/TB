@@ -296,6 +296,37 @@ TITLE_CONFIDENCE = {
 REVIEW_THRESHOLD: float = 0.70
 
 # =============================================================================
+# SECTION 4.8.1: TITLE LABEL BLACKLIST (V4.2.4)
+# =============================================================================
+
+# Labels that appear in title blocks but are NOT titles
+# These get incorrectly extracted when text ordering places them after "TITLE:"
+TITLE_LABEL_BLACKLIST = {
+    # Field labels
+    "PROJECT NUMBER", "PROJECT NO", "PROJECT #", "PROJECT",
+    "PLOT DATE", "DATE", "ISSUE DATE", "REVISION DATE",
+    "SCALE", "DRAWING SCALE", "SHEET SCALE",
+    "SHEET NUMBER", "SHEET NO", "SHEET #", "SHEET",
+    "DRAWING NUMBER", "DRAWING NO", "DWG NO", "DWG",
+    "REVISION", "REV", "REVISION NO",
+
+    # Signature/approval labels
+    "DRAWN BY", "DRAWN", "DRAFTED BY",
+    "CHECKED BY", "CHECKED", "CHECKER",
+    "APPROVED BY", "APPROVED", "APPROVAL",
+    "DESIGNED BY", "DESIGNER",
+    "NAME AND TITLE", "NAME SIGNATURE", "SIGNATURE",
+
+    # Other common labels
+    "ADDRESS", "LOCATION", "SITE",
+    "CLIENT", "OWNER", "ARCHITECT", "ENGINEER",
+    "PHONE", "FAX", "EMAIL",
+    "COPYRIGHT", "CONFIDENTIAL",
+    "NOT FOR CONSTRUCTION", "PRELIMINARY", "DRAFT",
+    "TITLE BLOCK", "TITLE:",
+}
+
+# =============================================================================
 # SECTION 4.9: DRAWING INDEX PARSING (V4.2.1 Phase 2)
 # =============================================================================
 

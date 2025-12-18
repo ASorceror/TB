@@ -474,11 +474,16 @@ class Validator:
         }
 
     def _has_valid_keyword(self, title: str) -> bool:
-        """Check if title contains a valid keyword."""
+        """
+        Check if title contains a valid keyword.
+        V4.2.4: Handle plural forms (keyword + 'S')
+        """
         title_upper = title.upper()
         for keyword in VALID_TITLE_KEYWORDS:
-            # Check for whole word match
-            if re.search(r'\b' + re.escape(keyword) + r'\b', title_upper):
+            # Match keyword with optional 'S' for plurals
+            # e.g., "ELEVATION" matches "ELEVATION" and "ELEVATIONS"
+            pattern = r'\b' + re.escape(keyword) + r'S?\b'
+            if re.search(pattern, title_upper):
                 return True
         return False
 
