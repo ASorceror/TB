@@ -1,7 +1,20 @@
 """
-Blueprint Processor V4.4 - Field Extractor
+Blueprint Processor V4.7 - Field Extractor
 Extracts structured fields from text using multiple strategies.
 Integrates with Validator for sheet title validation.
+
+V4.7 Changes:
+- Fixed Strategy 4b: Now properly wired into extraction pipeline
+- Fixed bbox coordinate access (was looking for 'x'/'y', now uses 'bbox' tuple)
+- Uses actual page dimensions from page.rect instead of estimation
+- Added 'SHEET #' and 'SHT NO' to label matching
+- Added page parameter to extract_sheet_number for accurate dimensions
+
+V4.6 Changes:
+- Added Strategy 4b: Spatial proximity matching with relative thresholds
+- Uses 7% of page dimensions as max distance threshold
+- Handles multi-column title blocks where label and value are spatially adjacent
+  but appear in different order in text extraction
 
 V4.4 Changes:
 - Project number extraction DISABLED (returns None) - not needed
@@ -182,9 +195,11 @@ class Extractor:
             logger.debug(f"Title block OCR failed: {e}")
             return None
 
-    def extract_sheet_number(self, text: str, project_number: str = None, text_blocks: list = None) -> Optional[str]:
+    def extract_sheet_number(self, text: str, project_number: str = None,
+                              text_blocks: list = None, page=None) -> Optional[str]:
         """
         Extract sheet number using LABEL-FIRST strategy (V4.4).
+        V4.7: Added page parameter for accurate page dimensions in Strategy 4b.
 
         ONLY extract sheet numbers that appear next to labels like:
         - SHEET / SHEET NO / SHEET NUMBER / SHEET #
@@ -198,6 +213,12 @@ class Extractor:
         - Pure numbers (1020, 2430)
         - Long codes (U465, D6226)
         - Anything not near a SHEET/DWG label
+
+        Args:
+            text: Full page text
+            project_number: Project number (unused, for compatibility)
+            text_blocks: List of text blocks with bbox coordinates
+            page: PyMuPDF page object for accurate dimensions (V4.7)
         """
         text_upper = text.upper()
         text_for_extraction = self.remove_index_sections(text_upper)
@@ -286,8 +307,9 @@ class Extractor:
                     break  # Stop at first non-blank, non-matching line
 
         # Strategy 4: Spatial approach with text_blocks (if available)
+        # V4.7: Tightened keywords to avoid false positives like "FIXTURE CUT SHEET ONSITE"
         if text_blocks:
-            sheet_label_keywords = ['SHEET', 'DWG NO', 'DRAWING NO', 'SHEET NO', 'SHEET NUMBER', 'EET NO', 'NO.:', 'NO:']
+            sheet_label_keywords = ['SHEET NO', 'SHEET NUMBER', 'SHEET #', 'SHT NO', 'DWG NO', 'DRAWING NO', 'EET NO']
             for i, block in enumerate(text_blocks):
                 block_text = str(block.get('text', '')).upper()
                 if any(lbl in block_text for lbl in sheet_label_keywords):
@@ -301,10 +323,101 @@ class Extractor:
                                 logger.debug(f"Sheet number found via spatial: '{candidate}'")
                                 return candidate
 
+        # Strategy 4b: Spatial proximity matching with relative thresholds (V4.7)
+        # Finds sheet numbers physically close to SHEET labels using actual coordinates
+        # This handles multi-column title blocks where label and value are in different
+        # text extraction order but are spatially adjacent on the page.
+        # V4.7: Fixed to use bbox coordinates and actual page dimensions
+        if text_blocks and len(text_blocks) > 0:
+            # V4.7: Use actual page dimensions from page object instead of estimation
+            # page object is passed via extract_fields() and available in outer scope
+            # Fall back to estimation only if page not available
+            if page is not None:
+                page_width = page.rect.width
+                page_height = page.rect.height
+            else:
+                # Fallback: estimate from text block extent (less accurate)
+                max_x = 0
+                max_y = 0
+                for block in text_blocks:
+                    bbox = block.get('bbox', (0, 0, 0, 0))
+                    if bbox[2] > max_x:  # x1 (right edge)
+                        max_x = bbox[2]
+                    if bbox[3] > max_y:  # y1 (bottom edge)
+                        max_y = bbox[3]
+                page_width = max_x if max_x > 0 else 3000
+                page_height = max_y if max_y > 0 else 2000
+
+            # Use relative thresholds: 7% of page dimensions
+            # Based on Task C analysis: typical label-to-value distance is 0.1-6.4%
+            # Minimum of 150 points to handle edge cases
+            max_x_dist = max(page_width * 0.07, 150)
+            max_y_dist = max(page_height * 0.07, 150)
+
+            logger.debug(f"Strategy 4b: page={page_width:.0f}x{page_height:.0f}, threshold={max_x_dist:.0f}x{max_y_dist:.0f}")
+
+            # Find blocks containing SHEET NUMBER labels (be specific to avoid SHEET TITLE)
+            # Labels may have colons, newlines, etc. so check with cleaned text
+            label_blocks = []
+            for block in text_blocks:
+                block_text = str(block.get('text', '')).upper().strip()
+                # Match "SHEET NUMBER", "SHEET NO", "DWG NO", etc.
+                # V4.7: Also match "SHEET #" and "SHT NO" variants
+                if ('SHEET NUMBER' in block_text or 'SHEET NO' in block_text or
+                    'SHEET #' in block_text or 'SHT NO' in block_text or
+                    block_text.startswith('DWG NO') or block_text.startswith('DRAWING NO') or
+                    block_text == 'SHEET NUMBER:' or block_text == 'SHEET NO:' or
+                    block_text == 'SHEET NO.:' or block_text == 'SHEET #:'):
+                    label_blocks.append(block)
+
+            # Find blocks containing potential sheet number values
+            value_blocks = []
+            spatial_sheet_pattern = re.compile(r'^[A-Z]{1,3}[-.]?\d{1,4}(?:\.\d{1,2})?$')
+            for block in text_blocks:
+                block_text = str(block.get('text', '')).strip()
+                if spatial_sheet_pattern.match(block_text.upper()) and len(block_text) <= 10:
+                    if validate_sheet_candidate(block_text.upper()):
+                        value_blocks.append((block, block_text.upper()))
+
+            logger.debug(f"Strategy 4b: found {len(label_blocks)} labels, {len(value_blocks)} values")
+
+            # Find value closest to any SHEET label within threshold
+            if label_blocks and value_blocks:
+                best_match = None
+                best_dist = float('inf')
+
+                for label_block in label_blocks:
+                    # V4.7: Extract coordinates from bbox tuple (x0, y0, x1, y1)
+                    label_bbox = label_block.get('bbox', (0, 0, 0, 0))
+                    lx = label_bbox[0]  # x0 (left edge)
+                    ly = label_bbox[1]  # y0 (top edge)
+
+                    for value_block, value_text in value_blocks:
+                        # V4.7: Extract coordinates from bbox tuple
+                        value_bbox = value_block.get('bbox', (0, 0, 0, 0))
+                        vx = value_bbox[0]  # x0 (left edge)
+                        vy = value_bbox[1]  # y0 (top edge)
+
+                        x_dist = abs(vx - lx)
+                        y_dist = abs(vy - ly)
+
+                        if x_dist <= max_x_dist and y_dist <= max_y_dist:
+                            dist = (x_dist ** 2 + y_dist ** 2) ** 0.5
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_match = value_text
+                                logger.debug(f"Strategy 4b: candidate '{value_text}' at dist={dist:.1f}")
+
+                if best_match:
+                    logger.debug(f"Sheet number found via spatial proximity (V4.7): '{best_match}'")
+                    return best_match
+
         # Strategy 5: Check last lines of text for isolated sheet numbers
         # Title blocks often have sheet numbers on their own line at the end of vector text
         # Pattern: A1.1, M2.1, E1.1 etc. on a line by itself (typical title block layout)
-        last_lines = lines[-10:] if len(lines) > 10 else lines
+        # V4.7: Expanded from 10 to 40 lines to handle pages with extensive title block text
+        # (e.g., addresses, disclaimers, company info after the sheet number)
+        last_lines = lines[-40:] if len(lines) > 40 else lines
         for line in reversed(last_lines):
             line_stripped = line.strip()
             # Only match lines that are JUST a sheet number (possibly with whitespace)
@@ -504,7 +617,8 @@ class Extractor:
             result["extraction_details"]["project_number"] = "extracted"
 
         # Try sheet number extraction from full-page text first
-        sheet_number = self.extract_sheet_number(text, project_number, text_blocks)
+        # V4.7: Pass page and text_blocks for Strategy 4b spatial proximity matching
+        sheet_number = self.extract_sheet_number(text, project_number, text_blocks, page)
 
         # Fallback 1: If sheet number not found and we have a title block image,
         # OCR the title block at high resolution (catches small fonts)
@@ -512,7 +626,8 @@ class Extractor:
             logger.debug("Sheet number not found in full-page text, trying title block OCR")
             title_block_text = self._ocr_title_block_for_sheet_number(title_block_image)
             if title_block_text:
-                sheet_number = self.extract_sheet_number(title_block_text, project_number)
+                # V4.7: Pass page for consistent interface (Strategy 4b won't trigger for OCR text)
+                sheet_number = self.extract_sheet_number(title_block_text, project_number, None, page)
                 if sheet_number:
                     result["extraction_details"]["sheet_number"] = "title_block_ocr"
                     logger.debug(f"Sheet number found via title block OCR: {sheet_number}")
@@ -526,7 +641,8 @@ class Extractor:
                 page_image, original_page_image, rotation_applied
             )
             if page_edge_text:
-                sheet_number = self.extract_sheet_number(page_edge_text, project_number)
+                # V4.7: Pass page for consistent interface
+                sheet_number = self.extract_sheet_number(page_edge_text, project_number, None, page)
                 if sheet_number:
                     result["extraction_details"]["sheet_number"] = "page_edge_ocr"
                     logger.debug(f"Sheet number found via page edge OCR: {sheet_number}")
@@ -537,7 +653,8 @@ class Extractor:
             logger.debug(f"Trying wide title block OCR on original image (rotation={rotation_applied})")
             original_tb_text = self._ocr_wide_title_block(original_page_image)
             if original_tb_text:
-                sheet_number = self.extract_sheet_number(original_tb_text, project_number)
+                # V4.7: Pass page for consistent interface
+                sheet_number = self.extract_sheet_number(original_tb_text, project_number, None, page)
                 if sheet_number:
                     result["extraction_details"]["sheet_number"] = "original_wide_tb_ocr"
                     logger.debug(f"Sheet number found via original wide title block OCR: {sheet_number}")

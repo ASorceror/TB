@@ -1,6 +1,10 @@
 """
-Blueprint Processor V4.2.1 - Sheet Title Extractor
+Blueprint Processor V4.7 - Sheet Title Extractor
 Master coordinator for the 4-layer title extraction system.
+
+V4.7 Changes:
+- Added text_blocks retrieval and passing to extract_fields
+- Enables Strategy 4b spatial proximity matching
 """
 
 import hashlib
@@ -163,10 +167,15 @@ class SheetTitleExtractor:
             )
             title_block_bbox = detection.get('bbox')
 
+        # V4.7: Get text blocks with coordinates for spatial proximity matching
+        text_blocks = pdf_handler.get_text_blocks(page_num)
+
         # Extract using layered approach
         # V4.4: Pass both normalized and original images for rotation fallback
+        # V4.7: Pass text_blocks for Strategy 4b spatial proximity matching
         result = self._extractor.extract_fields(
             text=text,
+            text_blocks=text_blocks,  # V4.7: Text blocks with bbox coordinates
             page_number=page_number_1idx,
             page=page,
             title_block_bbox_pixels=title_block_bbox,
