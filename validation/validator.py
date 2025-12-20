@@ -1,9 +1,15 @@
 """
-Blueprint Processor V4.2.1 - Validator
+Blueprint Processor V4.4 - Validator
 Validates extracted field data including sheet title validation.
+
+V4.4 Changes:
+- Accept single-word titles for construction terms (VALID_SINGLE_WORD_TITLES)
+- Truncate long titles instead of rejecting
+- Removed aggressive proper noun pattern rejection
 """
 
 import re
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -14,8 +20,11 @@ from constants import (
     PATTERNS, TITLE_GARBAGE_PATTERNS, VALID_TITLE_KEYWORDS,
     TITLE_ACRONYMS, TITLE_LENGTH, TITLE_CONFIDENCE, REVIEW_THRESHOLD,
     QUALITY_SINGLE_KEYWORD_REJECTS, QUALITY_GATE_THRESHOLDS,
-    SHEET_NUMBER_BLACKLIST, SHEET_NUMBER_STRICT_PATTERN
+    SHEET_NUMBER_BLACKLIST, SHEET_NUMBER_STRICT_PATTERN,
+    VALID_SINGLE_WORD_TITLES  # V4.4
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Validator:
@@ -84,10 +93,12 @@ class Validator:
 
     def is_quality_title(self, title: str, project_number: str = None) -> Tuple[bool, str]:
         """
-        Quality Gate: Stricter validation for spatial extraction results.
+        Quality Gate: Validation for extracted titles (V4.4).
 
-        This is MORE strict than validate_sheet_title() because spatial
-        extraction often picks prominent text that isn't actually a title.
+        V4.4 Changes:
+        - Accept single-word titles in VALID_SINGLE_WORD_TITLES
+        - Removed aggressive proper noun pattern rejection
+        - More lenient for multi-word titles
 
         Args:
             title: The extracted title to evaluate
@@ -95,14 +106,6 @@ class Validator:
 
         Returns:
             Tuple of (is_quality: bool, reason: str)
-            - is_quality: True if title passes quality gate
-            - reason: Explanation for the decision (for logging/debugging)
-
-        Quality Criteria:
-            1. Not empty or too short (< 3 chars)
-            2. Does not match any garbage pattern
-            3. Not a single rejected keyword
-            4. Has a valid keyword + context, OR is long enough with multiple words
         """
         # Handle empty/None
         if not title:
@@ -113,8 +116,10 @@ class Validator:
         if len(title_clean) < QUALITY_GATE_THRESHOLDS['min_length']:
             return (False, f"too_short:{len(title_clean)}")
 
+        # V4.4: Don't reject long titles - they'll be truncated later
+        # Just log a warning
         if len(title_clean) > QUALITY_GATE_THRESHOLDS['max_length']:
-            return (False, f"too_long:{len(title_clean)}")
+            logger.debug(f"Long title will be truncated: {len(title_clean)} chars")
 
         title_upper = title_clean.upper()
 
@@ -125,13 +130,16 @@ class Validator:
         # Check garbage patterns
         for pattern in TITLE_GARBAGE_PATTERNS:
             if pattern.search(title_clean):
-                # Get a short version of the pattern for logging
                 pattern_str = pattern.pattern[:30].replace('\\', '')
                 return (False, f"garbage_pattern:{pattern_str}")
 
-        # Check single keyword rejects
+        # Check single keyword rejects (reduced list in V4.4)
         if title_upper in QUALITY_SINGLE_KEYWORD_REJECTS:
             return (False, f"single_keyword:{title_upper}")
+
+        # V4.4: Accept single-word titles that are valid construction terms
+        if title_upper in VALID_SINGLE_WORD_TITLES:
+            return (True, f"valid_single_word:{title_upper}")
 
         # Check for valid keywords
         has_keyword = self._has_valid_keyword(title_clean)
@@ -145,25 +153,16 @@ class Validator:
         if has_keyword and len(title_clean) >= QUALITY_GATE_THRESHOLDS['min_length_single_word']:
             return (True, f"keyword_long:{len(title_clean)}_chars")
 
-        # FAIL: Has keyword but no context
+        # PASS: Has keyword even if single word (V4.4 - more lenient)
         if has_keyword and word_count == 1:
-            return (False, f"keyword_no_context:{title_upper}")
+            return (True, f"single_keyword_valid:{title_upper}")
 
-        # No keyword - stricter requirements
-        # PASS: Multiple words AND reasonable length
-        if word_count >= QUALITY_GATE_THRESHOLDS['min_words_without_keyword']:
-            if len(title_clean) >= 10:
-                # Additional check: reject proper noun patterns without keywords
-                # Pattern: "Ball State University", "Recreation Center"
-                # These look like "Title Case Names" not drawing titles
-                words = title_clean.split()
-                capitalized_words = sum(1 for w in words if len(w) > 1 and w[0].isupper() and w[1:].islower())
-                if capitalized_words == len(words) and not has_keyword:
-                    # All words are Title Case with no keyword - likely a name
-                    return (False, f"proper_noun_pattern:{title_clean[:20]}")
-                return (True, f"multi_word_no_keyword:{word_count}_words")
+        # V4.4: Accept multi-word titles without keyword check
+        # Removed aggressive proper noun pattern rejection
+        if word_count >= 2 and len(title_clean) >= 8:
+            return (True, f"multi_word:{word_count}_words")
 
-        # Default: reject
+        # Default: reject only very short/generic titles
         return (False, "insufficient_context")
 
     def validate(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -219,6 +218,9 @@ class Validator:
             date_valid, date_errors, date_warnings = self._validate_date(date)
             errors.extend(date_errors)
             warnings.extend(date_warnings)
+
+        if not (data.get('sheet_title') or '').strip():
+            errors.append('sheet_title is missing')
 
         # Overall validity
         is_valid = len(errors) == 0
@@ -419,14 +421,11 @@ class Validator:
                 'rejection_reason': f'Title too short ({len(title)} chars, min {TITLE_LENGTH["MIN"]})'
             }
 
+        # V4.4: Truncate long titles instead of rejecting
         if len(title) > TITLE_LENGTH['MAX']:
-            return {
-                'is_valid': False,
-                'title': None,
-                'confidence': 0.0,
-                'needs_review': True,
-                'rejection_reason': f'Title too long ({len(title)} chars, max {TITLE_LENGTH["MAX"]})'
-            }
+            original_len = len(title)
+            title = title[:TITLE_LENGTH['MAX'] - 3] + "..."
+            logger.debug(f"Truncated title from {original_len} to {len(title)} chars")
 
         # Check for garbage patterns
         for pattern in TITLE_GARBAGE_PATTERNS:

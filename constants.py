@@ -1,7 +1,12 @@
 """
-Blueprint Processor V4.2.1 - Constants Module
+Blueprint Processor V4.4 - Constants Module
 ALL patterns, thresholds, and configuration values are defined here.
 Import from this module - NEVER define inline.
+
+V4.4 Changes:
+- Removed aggressive garbage patterns (University, College, Baseball, etc.)
+- Reduced QUALITY_SINGLE_KEYWORD_REJECTS list
+- Added VALID_SINGLE_WORD_TITLES for acceptable single-word titles
 """
 
 from typing import Dict, List, Tuple
@@ -12,7 +17,7 @@ import re
 # =============================================================================
 PATTERNS: Dict[str, re.Pattern] = {
     # Sheet number: A101, S-201, AD001, M1.01
-    'sheet_number': re.compile(r'[A-Z]{1,2}[-]?\d{1,3}(?:\.\d{1,2})?'),
+    'sheet_number': re.compile(r'\b[A-Z]{1,2}[-]?\d{1,3}(?:\.\d{1,2})?\b'),
 
     # Project number: 2024-0156, 123456, 2024.001, P27142 (with optional letter prefix)
     'project_number': re.compile(r'[A-Z]?\d{4,}[-.]?\d*'),
@@ -172,16 +177,10 @@ TITLE_GARBAGE_PATTERNS: List[re.Pattern] = [
     re.compile(r'^\d{3,5}$'),  # "1425", "60601"
     re.compile(r'^[A-Z]{1,2}[-.]?\d{1,3}(\.\d{1,2})?$', re.IGNORECASE),  # "A2.0", "S-101"
 
-    # Institution/Organization names
-    re.compile(r'\bUniversity\b', re.IGNORECASE),
-    re.compile(r'\bCollege\b', re.IGNORECASE),
-    re.compile(r'Recreation\s*Center', re.IGNORECASE),
-    re.compile(r'Ball\s*State', re.IGNORECASE),
-
-    # Company names / Commercial patterns
-    re.compile(r'Northern\s*Tool', re.IGNORECASE),
-    re.compile(r'\+equipment', re.IGNORECASE),
-    re.compile(r'Baseball\s*Building', re.IGNORECASE),
+    # V4.4: Removed overly aggressive patterns that rejected valid titles:
+    # - University, College, Ball State (these can appear in valid project titles)
+    # - Northern Tool, Baseball Building (valid project names)
+    # - Recreation Center (valid building type)
 
     # Address patterns
     re.compile(r'^\d+\s+[NSEW]\.?\s+\w+', re.IGNORECASE),  # "955 N Larrabee"
@@ -209,34 +208,27 @@ TITLE_GARBAGE_PATTERNS: List[re.Pattern] = [
     re.compile(r'^Graceland\s+Avenue$', re.IGNORECASE),
 ]
 
-# V4.2.2: Single keywords that are NOT valid titles on their own
-# These require additional context (e.g., "Floor Plan" valid, "Plan" alone invalid)
+# V4.4: Single keywords that are NOT valid titles on their own
+# Reduced list - many single words ARE valid drawing titles
 QUALITY_SINGLE_KEYWORD_REJECTS: List[str] = [
-    'SECTION',
-    'PLAN',
-    'ELEVATION',
-    'ELEVATIONS',
-    'DETAIL',
-    'DETAILS',
-    'SCHEDULE',
-    'SCHEDULES',
-    'DIAGRAM',
-    'SPECIFICATIONS',
-    'SPECIFICATION',
-    'DEMOLITION',
-    'FOUNDATION',
-    'FLOOR',
-    'MECHANICAL',
-    'ELECTRICAL',
-    'PLUMBING',
-    'HVAC',
-    'STRUCTURAL',
-    'GENERAL',
-    'INTERIOR',
-    'EXTERIOR',
-    'NOTES',
-    'LEGEND',
-    'INDEX',
+    'PLAN',       # Too generic alone
+    'SECTION',    # Too generic alone
+    'DETAIL',     # Too generic alone
+    'DIAGRAM',    # Too generic alone
+    'NOTES',      # Too generic alone
+    'LEGEND',     # Too generic alone
+    'INDEX',      # Too generic alone
+    'FLOOR',      # Too generic alone
+    'GENERAL',    # Too generic alone
+]
+
+# V4.4: Single words that ARE valid titles (construction/architecture terms)
+VALID_SINGLE_WORD_TITLES: List[str] = [
+    'APARTMENTS', 'ELEVATIONS', 'ELEVATION', 'DETAILS', 'SECTIONS',
+    'PLANS', 'SCHEDULES', 'SCHEDULE', 'SPECIFICATIONS', 'SPECIFICATION',
+    'DEMOLITION', 'MECHANICAL', 'ELECTRICAL', 'PLUMBING', 'STRUCTURAL',
+    'CIVIL', 'LANDSCAPE', 'INTERIOR', 'EXTERIOR', 'FOUNDATION',
+    'HVAC', 'FRAMING', 'PARTITIONS', 'CEILINGS', 'FINISHES',
 ]
 
 # V4.2.2: Quality Gate thresholds
@@ -276,8 +268,8 @@ TITLE_ACRONYMS: List[str] = [
 # Title length thresholds
 TITLE_LENGTH = {
     'MIN': 3,              # < 3 chars: REJECT (too short)
-    'SOFT_MAX': 45,        # 46-70 chars: ACCEPT with confidence penalty
-    'MAX': 70,             # > 70 chars: REJECT (almost certainly garbage)
+    'SOFT_MAX': 60,        # 61-120 chars: ACCEPT with confidence penalty
+    'MAX': 120,            # > 120 chars: TRUNCATE (V4.5: multi-part titles can be long)
 }
 
 # Confidence scoring for title extraction

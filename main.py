@@ -1,5 +1,5 @@
 """
-Blueprint Processor V4.2.1 - Main Entry Point
+Blueprint Processor V4.4 - Main Entry Point
 CLI interface for processing blueprints.
 
 Usage:
@@ -22,12 +22,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from tqdm import tqdm
 
-from constants import LOG_FILENAME, EXTRACTION_METHODS, CONFIDENCE_LEVELS
+from constants import LOG_FILENAME, EXTRACTION_METHODS, CONFIDENCE_LEVELS, DEFAULT_DPI
 from core.pdf_handler import PDFHandler
 from core.page_normalizer import PageNormalizer
-from core.region_detector import RegionDetector
 from core.ocr_engine import OCREngine
-from core.extractor import Extractor
 from core.sheet_title_extractor import SheetTitleExtractor
 from validation.validator import Validator
 from database.operations import DatabaseOperations
@@ -61,9 +59,7 @@ class BlueprintProcessor:
 
         # Initialize components
         self.normalizer = PageNormalizer(telemetry_dir=self.telemetry_dir)
-        self.detector = RegionDetector(telemetry_dir=self.telemetry_dir)
         self.ocr_engine = OCREngine(telemetry_dir=self.telemetry_dir)
-        self.extractor = Extractor(ocr_engine=self.ocr_engine)
         self.validator = Validator()
         self.db = DatabaseOperations(db_path)
 
@@ -77,7 +73,7 @@ class BlueprintProcessor:
     def process_page(self, handler: PDFHandler, page_num: int,
                      pdf_filename: str, pdf_hash: str = None) -> Dict[str, Any]:
         """
-        Process a single page from a PDF using V4.2.1 layered extraction.
+        Process a single page from a PDF using the four-layer extractor.
 
         Args:
             handler: PDFHandler instance
@@ -105,93 +101,51 @@ class BlueprintProcessor:
             'needs_review': 1,
             'is_valid': 0,
             'errors': [],
+            'extraction_details': {},
         }
 
         try:
-            # Analyze page type
             analysis = handler.analyze_page(page_num)
-            page = handler.doc[page_num]
-            is_cropped_region = False
-            page_image = None
-            title_block_image = None
-            title_block_bbox = None
+            is_vector = analysis['recommendation'] == EXTRACTION_METHODS['VECTOR_PDF']
+            result['extraction_method'] = 'vector' if is_vector else 'ocr'
 
-            if analysis['recommendation'] == EXTRACTION_METHODS['VECTOR_PDF']:
-                # Vector PDF: Use embedded text
+            page_image = handler.get_page_image(page_num, dpi=DEFAULT_DPI)
+            normalized_image, orientation_info = self.normalizer.normalize(page_image)
+
+            if is_vector:
                 text = handler.get_page_text(page_num)
-                text_blocks = handler.get_text_blocks(page_num)
-                result['extraction_method'] = 'vector'
-
-                # Get image size for spatial analysis
-                dims = handler.get_page_dimensions(page_num)
-                image_size = (int(dims['width']), int(dims['height']))
-
             else:
-                # Scanned PDF: Use OCR from multiple regions for better coverage
-                image = handler.get_page_image(page_num, dpi=200)
-                page_image = image
-                normalized, orientation_info = self.normalizer.normalize(image)
+                text = self.ocr_engine.ocr_image(normalized_image)
 
-                # Detect title block region
-                detection = self.detector.detect_title_block(normalized)
-                cropped = self.detector.crop_title_block(normalized, detection)
-                title_block_image = cropped
-                title_block_bbox = detection.get('bbox')
-
-                # OCR the title block
-                text = self.ocr_engine.ocr_image(cropped)
-
-                # Also OCR right_strip region if primary wasn't right_strip
-                # Sheet numbers are often in a different location than project numbers
-                if detection['region_name'] != 'right_strip':
-                    from constants import TITLE_BLOCK_REGIONS
-                    width, height = normalized.size
-                    x1, y1, x2, y2 = TITLE_BLOCK_REGIONS['right_strip']
-                    right_crop = normalized.crop((
-                        int(x1 * width), int(y1 * height),
-                        int(x2 * width), int(y2 * height)
-                    ))
-                    text_right = self.ocr_engine.ocr_image(right_crop)
-                    # Combine texts for extraction
-                    text = text + '\n' + text_right
-
-                text_blocks = None
-                image_size = normalized.size
-                result['extraction_method'] = 'ocr'
-                result['confidence'] = detection['confidence']
-                is_cropped_region = True  # OCR text is from cropped title block region
-
-            # V4.2.1: Extract fields using layered approach
-            extracted = self.extractor.extract_fields(
+            extracted = self.title_extractor.extract_title(
+                pdf_handler=handler,
+                page_num=page_num,
+                page_image=normalized_image,
                 text=text,
-                text_blocks=text_blocks,
-                image_size=image_size,
-                page_number=page_num + 1,
-                is_cropped_region=is_cropped_region,
-                page=page,
-                title_block_bbox_pixels=title_block_bbox,
-                title_block_image=title_block_image,
+                original_page_image=page_image,  # V4.4: Pass original for rotation fallback
+                orientation_info=orientation_info,  # V4.4: Pass rotation info
             )
 
-            # Update result with extracted fields
-            result['sheet_number'] = extracted.get('sheet_number')
-            result['project_number'] = extracted.get('project_number')
-            result['sheet_title'] = extracted.get('sheet_title')
-            result['date'] = extracted.get('date')
-            result['scale'] = extracted.get('scale')
-            result['discipline'] = extracted.get('discipline')
+            extraction_details = extracted.get('extraction_details', {}) or {}
+            if orientation_info:
+                extraction_details.setdefault('orientation', orientation_info)
+            result['extraction_details'] = extraction_details
 
-            # V4.2.1: Title extraction metadata
+            for field in ['sheet_number', 'project_number', 'sheet_title', 'date', 'scale', 'discipline']:
+                result[field] = extracted.get(field)
+
             result['title_confidence'] = extracted.get('title_confidence', 0.0)
             result['title_method'] = extracted.get('title_method')
             result['needs_review'] = 1 if extracted.get('needs_review', True) else 0
+            result['is_cover_sheet'] = extracted.get('is_cover_sheet', False)
 
-            # Validate
-            validation = self.validator.validate(extracted)
+            if result.get('project_number') and not result.get('project_number_source'):
+                result['project_number_source'] = 'extracted'
+
+            validation = self.validator.validate(result)
             result['is_valid'] = 1 if validation['is_valid'] else 0
             result['errors'] = validation['errors']
 
-            # Set confidence based on extraction quality
             if result['sheet_number'] and result['project_number']:
                 if validation['is_valid']:
                     result['confidence'] = CONFIDENCE_LEVELS['HIGH']
@@ -203,6 +157,7 @@ class BlueprintProcessor:
             self.logger.error(f"Error processing page {page_num + 1} of {pdf_filename}: {e}")
 
         return result
+
 
     def apply_project_number_fallback(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -225,7 +180,11 @@ class BlueprintProcessor:
             return results  # No project numbers found at all
 
         # Find the most common project number
-        most_common = Counter(project_numbers).most_common(1)[0][0]
+        most_common, count = Counter(project_numbers).most_common(1)[0]
+        confidence = count / max(1, len(project_numbers))
+        if confidence < 0.6:
+            self.logger.warning('Project number fallback skipped (insufficient agreement across pages)')
+            return results
 
         # Apply to pages that are missing it
         for result in results:
@@ -251,33 +210,21 @@ class BlueprintProcessor:
         self.logger.info(f"Processing: {pdf_filename}")
 
         try:
-            # V4.2.1: Compute PDF hash for stable identification
+            self.title_extractor.reset_for_new_pdf()
             pdf_hash = self.title_extractor.compute_pdf_hash(pdf_path)
             self.logger.info(f"PDF hash: {pdf_hash}")
 
-            # Reset extractor state for new PDF
-            self.extractor.reset_for_new_pdf()
-
             with PDFHandler(pdf_path) as handler:
-                # V4.2.1: Parse drawing index from cover sheet first
-                self.extractor.parse_drawing_index(handler)
-                index_size = len(self.extractor._drawing_index)
-                if index_size > 0:
-                    self.logger.info(f"Drawing index: {index_size} entries")
+                index_map = self.title_extractor.parse_drawing_index(handler)
+                if index_map:
+                    self.logger.info(f"Drawing index: {len(index_map)} entries")
 
                 for page_num in range(handler.page_count):
                     result = self.process_page(handler, page_num, pdf_filename, pdf_hash)
                     results.append(result)
 
-            # Apply fallback for missing project numbers
-            # (use most common project number from other pages in same PDF)
             results = self.apply_project_number_fallback(results)
 
-            # Apply cross-reference validation using drawing index
-            results = self._apply_cross_reference(results)
-
-            # Store all results in database
-            # Filter out non-database fields (errors, extraction_details, project_number_source, etc.)
             non_db_fields = {'errors', 'extraction_details', 'project_number_source', 'is_cover_sheet'}
             for result in results:
                 db_data = {k: v for k, v in result.items() if k not in non_db_fields}
@@ -293,44 +240,7 @@ class BlueprintProcessor:
 
         return results
 
-    def _apply_cross_reference(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Use drawing index to validate and correct extraction results.
 
-        Args:
-            results: List of extraction results
-
-        Returns:
-            Updated results with cross-reference corrections
-        """
-        if not self.extractor._drawing_index:
-            return results
-
-        for result in results:
-            sheet_number = result.get('sheet_number')
-            if not sheet_number:
-                continue
-
-            # Look up in drawing index
-            index_title = self.extractor.lookup_in_index(sheet_number)
-            if not index_title:
-                continue
-
-            current_method = result.get('title_method')
-            current_title = result.get('sheet_title')
-
-            # If we got a title from a lower-confidence method, prefer index
-            if current_method in ['pattern', 'spatial', None]:
-                if index_title and current_title != index_title:
-                    result['sheet_title'] = index_title
-                    result['title_confidence'] = 0.95
-                    result['title_method'] = 'drawing_index_xref'
-                    result['needs_review'] = 0
-                    self.logger.debug(
-                        f"Cross-ref: '{current_title}' -> '{index_title}' (sheet {sheet_number})"
-                    )
-
-        return results
 
     def process_folder(self, folder_path: Path) -> Dict[str, Any]:
         """
@@ -377,13 +287,9 @@ class BlueprintProcessor:
             error_count=error_count
         )
 
+        summary = self._summarize_results(all_results, len(pdf_files), success_count, error_count)
         return {
-            'summary': {
-                'total_pdfs': len(pdf_files),
-                'total_pages': len(all_results),
-                'success_count': success_count,
-                'error_count': error_count,
-            },
+            'summary': summary,
             'sheets': all_results,
         }
 
@@ -399,19 +305,38 @@ class BlueprintProcessor:
         """
         if path.is_file():
             results = self.process_pdf(path)
+            summary = self._summarize_results(results, 1)
             return {
-                'summary': {
-                    'total_pdfs': 1,
-                    'total_pages': len(results),
-                    'success_count': sum(1 for r in results if r.get('is_valid', 0) == 1),
-                    'error_count': sum(1 for r in results if r.get('is_valid', 0) == 0),
-                },
+                'summary': summary,
                 'sheets': results,
             }
         elif path.is_dir():
             return self.process_folder(path)
         else:
             raise ValueError(f"Path does not exist: {path}")
+
+    def _summarize_results(self, sheets: List[Dict[str, Any]], total_pdfs: int,
+                            success_count: Optional[int] = None, error_count: Optional[int] = None) -> Dict[str, Any]:
+        """Build summary statistics for reports."""
+        if success_count is None:
+            success_count = sum(1 for r in sheets if r.get('is_valid', 0) == 1)
+        if error_count is None:
+            error_count = len(sheets) - success_count
+
+        missing_titles = sum(1 for r in sheets if not (r.get('sheet_title') or '').strip())
+        missing_sheet_numbers = sum(1 for r in sheets if not (r.get('sheet_number') or '').strip())
+        fallback_projects = sum(1 for r in sheets if r.get('project_number_source') == 'fallback')
+
+        return {
+            'total_pdfs': total_pdfs,
+            'total_pages': len(sheets),
+            'success_count': success_count,
+            'error_count': error_count,
+            'missing_sheet_titles': missing_titles,
+            'missing_sheet_numbers': missing_sheet_numbers,
+            'fallback_project_numbers': fallback_projects,
+        }
+
 
     def generate_report(self, results: Dict[str, Any], output_dir: Path) -> Dict[str, Path]:
         """
@@ -561,7 +486,7 @@ def cmd_process(args):
 
     # Print summary
     summary = results['summary']
-    print(f"\nProcessing Complete! (Blueprint Processor V4.2.1)")
+    print(f"\nProcessing Complete! (Blueprint Processor V4.4)")
     print(f"  PDFs processed: {summary['total_pdfs']}")
     print(f"  Pages processed: {summary['total_pages']}")
     print(f"  Successful extractions: {summary['success_count']}")
@@ -601,7 +526,7 @@ def cmd_stats(args):
     total = db.count_sheets()
     runs = db.get_processing_runs(5)
 
-    print(f"\nDatabase Statistics (V4.2.1):")
+    print(f"\nDatabase Statistics (V4.4):")
     print(f"  Total sheets: {total}")
     print(f"\nRecent Processing Runs:")
 
@@ -652,7 +577,7 @@ def cmd_review(args):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Blueprint Processor V4.2.1 - Extract data from blueprint PDFs'
+        description='Blueprint Processor V4.4 - Extract data from blueprint PDFs'
     )
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 

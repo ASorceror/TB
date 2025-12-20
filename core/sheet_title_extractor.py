@@ -114,6 +114,8 @@ class SheetTitleExtractor:
         page_num: int,
         page_image: Optional[Image.Image] = None,
         text: Optional[str] = None,
+        original_page_image: Optional[Image.Image] = None,
+        orientation_info: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Extract sheet title using the 4-layer approach.
@@ -121,8 +123,10 @@ class SheetTitleExtractor:
         Args:
             pdf_handler: PDFHandler instance
             page_num: 0-indexed page number
-            page_image: Optional pre-rendered page image
+            page_image: Optional pre-rendered (normalized) page image
             text: Optional pre-extracted text
+            original_page_image: Optional original (non-rotated) page image (V4.4)
+            orientation_info: Optional dict with rotation info from normalizer (V4.4)
 
         Returns:
             Dict with extraction results including:
@@ -144,6 +148,11 @@ class SheetTitleExtractor:
         title_block_image = None
         title_block_bbox = None
 
+        # V4.4: Get rotation info from orientation_info passed from main.py
+        rotation_applied = 0
+        if orientation_info:
+            rotation_applied = orientation_info.get('rotation_applied', 0)
+
         if page_image is not None:
             # Detect and crop title block for Vision API
             # V4.2.2: Always create title_block_image so Vision API can be used
@@ -155,12 +164,16 @@ class SheetTitleExtractor:
             title_block_bbox = detection.get('bbox')
 
         # Extract using layered approach
+        # V4.4: Pass both normalized and original images for rotation fallback
         result = self._extractor.extract_fields(
             text=text,
             page_number=page_number_1idx,
             page=page,
             title_block_bbox_pixels=title_block_bbox,
             title_block_image=title_block_image,
+            page_image=page_image,  # V4.4: Normalized page for edge OCR
+            original_page_image=original_page_image,  # V4.4: Original for rotation fallback
+            rotation_applied=rotation_applied,  # V4.4: Rotation info
         )
 
         # Add PDF hash

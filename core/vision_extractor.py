@@ -20,7 +20,7 @@ from constants import TITLE_CONFIDENCE
 logger = logging.getLogger(__name__)
 
 # Rate limiting constants
-MAX_CALLS_PER_PDF = 50
+MAX_CALLS_PER_PDF = 2000  # Effectively unlimited per PDF
 MAX_CALLS_PER_MINUTE = 10
 RATE_LIMIT_BACKOFF_SECONDS = 60
 RATE_LIMIT_EXTENDED_BACKOFF_SECONDS = 120
@@ -52,7 +52,7 @@ class VisionExtractor:
     Extracts sheet titles from title block images using Claude Vision API.
 
     Features:
-    - Rate limiting: max 50 calls per PDF, max 10 calls per minute
+    - Rate limiting: max 10 calls per minute (per-PDF limit removed)
     - Backoff on 429 errors: wait 60s, retry once
     - Caching by image hash to avoid duplicate API calls
     """
@@ -67,6 +67,15 @@ class VisionExtractor:
         self._calls_this_pdf = 0
         self._call_timestamps: list = []  # timestamps of recent calls
         self._rate_limited = False  # True if we've hit repeated 429s
+        limit_override = os.environ.get('VISION_MAX_CALLS_PER_PDF')
+        if limit_override is not None:
+            try:
+                parsed_limit = int(limit_override)
+            except ValueError:
+                parsed_limit = MAX_CALLS_PER_PDF
+        else:
+            parsed_limit = MAX_CALLS_PER_PDF
+        self._per_pdf_limit = None if parsed_limit <= 0 else parsed_limit
 
         # Try to initialize the API client
         self._init_client()
@@ -130,10 +139,7 @@ class VisionExtractor:
             logger.warning("Vision API disabled due to repeated rate limits")
             return False
 
-        # Check per-PDF limit
-        if self._calls_this_pdf >= MAX_CALLS_PER_PDF:
-            logger.warning(f"Vision API per-PDF limit reached ({MAX_CALLS_PER_PDF})")
-            return False
+        # Per-PDF limit removed - now effectively unlimited (MAX_CALLS_PER_PDF = 2000)
 
         # Check per-minute limit
         now = time.time()
