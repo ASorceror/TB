@@ -1,7 +1,12 @@
 """
-Blueprint Processor V4.7 - Field Extractor
+Blueprint Processor V4.7.1 - Field Extractor
 Extracts structured fields from text using multiple strategies.
 Integrates with Validator for sheet title validation.
+
+V4.7.1 Changes:
+- Reordered strategies: bbox spatial proximity (Strategy 4) now runs before
+  array index proximity (Strategy 4b) for more accurate matching
+- Added warning log when page object not available for Strategy 4
 
 V4.7 Changes:
 - Fixed Strategy 4b: Now properly wired into extraction pipeline
@@ -9,6 +14,8 @@ V4.7 Changes:
 - Uses actual page dimensions from page.rect instead of estimation
 - Added 'SHEET #' and 'SHT NO' to label matching
 - Added page parameter to extract_sheet_number for accurate dimensions
+- Tightened Strategy 4b keywords (removed bare 'SHEET')
+- Expanded Strategy 5 window from 10 to 40 lines
 
 V4.6 Changes:
 - Added Strategy 4b: Spatial proximity matching with relative thresholds
@@ -306,28 +313,12 @@ class Extractor:
                             return candidate
                     break  # Stop at first non-blank, non-matching line
 
-        # Strategy 4: Spatial approach with text_blocks (if available)
-        # V4.7: Tightened keywords to avoid false positives like "FIXTURE CUT SHEET ONSITE"
-        if text_blocks:
-            sheet_label_keywords = ['SHEET NO', 'SHEET NUMBER', 'SHEET #', 'SHT NO', 'DWG NO', 'DRAWING NO', 'EET NO']
-            for i, block in enumerate(text_blocks):
-                block_text = str(block.get('text', '')).upper()
-                if any(lbl in block_text for lbl in sheet_label_keywords):
-                    # Check this block and adjacent blocks (within 3 positions for multi-line)
-                    for j in range(max(0, i-1), min(len(text_blocks), i+4)):
-                        nearby_text = str(text_blocks[j].get('text', '')).upper()
-                        match = re.search(r'\b' + sheet_pattern + r'\b', nearby_text)
-                        if match:
-                            candidate = self._normalize_ocr_digits(match.group(1))
-                            if validate_sheet_candidate(candidate):
-                                logger.debug(f"Sheet number found via spatial: '{candidate}'")
-                                return candidate
-
-        # Strategy 4b: Spatial proximity matching with relative thresholds (V4.7)
+        # Strategy 4: Spatial proximity matching with bbox coordinates (V4.7)
         # Finds sheet numbers physically close to SHEET labels using actual coordinates
         # This handles multi-column title blocks where label and value are in different
         # text extraction order but are spatially adjacent on the page.
         # V4.7: Fixed to use bbox coordinates and actual page dimensions
+        # V4.7.1: Promoted from Strategy 4b - more accurate than array index proximity
         if text_blocks and len(text_blocks) > 0:
             # V4.7: Use actual page dimensions from page object instead of estimation
             # page object is passed via extract_fields() and available in outer scope
@@ -337,6 +328,7 @@ class Extractor:
                 page_height = page.rect.height
             else:
                 # Fallback: estimate from text block extent (less accurate)
+                logger.warning("Strategy 4: page object not available, using estimated dimensions (less accurate)")
                 max_x = 0
                 max_y = 0
                 for block in text_blocks:
@@ -354,7 +346,7 @@ class Extractor:
             max_x_dist = max(page_width * 0.07, 150)
             max_y_dist = max(page_height * 0.07, 150)
 
-            logger.debug(f"Strategy 4b: page={page_width:.0f}x{page_height:.0f}, threshold={max_x_dist:.0f}x{max_y_dist:.0f}")
+            logger.debug(f"Strategy 4: page={page_width:.0f}x{page_height:.0f}, threshold={max_x_dist:.0f}x{max_y_dist:.0f}")
 
             # Find blocks containing SHEET NUMBER labels (be specific to avoid SHEET TITLE)
             # Labels may have colons, newlines, etc. so check with cleaned text
@@ -379,7 +371,7 @@ class Extractor:
                     if validate_sheet_candidate(block_text.upper()):
                         value_blocks.append((block, block_text.upper()))
 
-            logger.debug(f"Strategy 4b: found {len(label_blocks)} labels, {len(value_blocks)} values")
+            logger.debug(f"Strategy 4: found {len(label_blocks)} labels, {len(value_blocks)} values")
 
             # Find value closest to any SHEET label within threshold
             if label_blocks and value_blocks:
@@ -406,11 +398,29 @@ class Extractor:
                             if dist < best_dist:
                                 best_dist = dist
                                 best_match = value_text
-                                logger.debug(f"Strategy 4b: candidate '{value_text}' at dist={dist:.1f}")
+                                logger.debug(f"Strategy 4: candidate '{value_text}' at dist={dist:.1f}")
 
                 if best_match:
-                    logger.debug(f"Sheet number found via spatial proximity (V4.7): '{best_match}'")
+                    logger.debug(f"Sheet number found via spatial proximity: '{best_match}'")
                     return best_match
+
+        # Strategy 4b: Array index proximity fallback (less accurate than Strategy 4)
+        # V4.7: Tightened keywords to avoid false positives like "FIXTURE CUT SHEET ONSITE"
+        # V4.7.1: Demoted from Strategy 4 - array index proximity can be wrong
+        if text_blocks:
+            sheet_label_keywords = ['SHEET NO', 'SHEET NUMBER', 'SHEET #', 'SHT NO', 'DWG NO', 'DRAWING NO', 'EET NO']
+            for i, block in enumerate(text_blocks):
+                block_text = str(block.get('text', '')).upper()
+                if any(lbl in block_text for lbl in sheet_label_keywords):
+                    # Check this block and adjacent blocks (within 3 positions for multi-line)
+                    for j in range(max(0, i-1), min(len(text_blocks), i+4)):
+                        nearby_text = str(text_blocks[j].get('text', '')).upper()
+                        match = re.search(r'\b' + sheet_pattern + r'\b', nearby_text)
+                        if match:
+                            candidate = self._normalize_ocr_digits(match.group(1))
+                            if validate_sheet_candidate(candidate):
+                                logger.debug(f"Sheet number found via array index proximity: '{candidate}'")
+                                return candidate
 
         # Strategy 5: Check last lines of text for isolated sheet numbers
         # Title blocks often have sheet numbers on their own line at the end of vector text
