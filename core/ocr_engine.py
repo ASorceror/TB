@@ -1,6 +1,17 @@
 """
-Blueprint Processor V4.1 - OCR Engine
+Blueprint Processor V5.0 - OCR Engine
 Handles OCR for scanned documents using Tesseract (and optionally PaddleOCR).
+
+V5.0 Changes:
+- Uses LSTM-friendly preprocessing (no binarization) by default
+- Research: Tesseract LSTM does internal preprocessing, external binarization hurts accuracy
+
+V4.9 Changes:
+- Centralized find_tesseract() moved to ocr_utils.py
+- Added image preprocessing before OCR for improved accuracy
+- Added confidence filtering to ocr_image_with_boxes()
+- Added preprocess parameter to control preprocessing
+- Converts image mode to ensure compatibility
 """
 
 import json
@@ -9,7 +20,6 @@ import traceback
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from PIL import Image
-import shutil
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -17,7 +27,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Setup logger for OCR engine
 logger = logging.getLogger('ocr_engine')
 
-from constants import TESSERACT_CONFIG
+from constants import TESSERACT_CONFIG, OCR_CONFIDENCE_THRESHOLD
+from core.ocr_utils import (
+    find_tesseract,
+    preprocess_for_ocr,
+    filter_by_confidence,
+    DEFAULT_CONFIDENCE_THRESHOLD,
+)
 
 # Try to import pytesseract
 try:
@@ -34,45 +50,6 @@ try:
     PADDLE_AVAILABLE = True
 except ImportError:
     pass
-
-
-def find_tesseract() -> Optional[str]:
-    """
-    Find Tesseract executable path.
-    Checks PATH, common locations, and Windows Registry.
-
-    Returns:
-        Path to tesseract executable or None
-    """
-    # Check PATH first
-    tesseract_path = shutil.which('tesseract')
-    if tesseract_path:
-        return tesseract_path
-
-    # Common Windows locations
-    common_paths = [
-        Path('C:/Program Files/Tesseract-OCR/tesseract.exe'),
-        Path('C:/Program Files (x86)/Tesseract-OCR/tesseract.exe'),
-        Path.home() / 'AppData/Local/Programs/Tesseract-OCR/tesseract.exe',
-    ]
-
-    for path in common_paths:
-        if path.exists():
-            return str(path)
-
-    # Try Windows Registry
-    try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Tesseract-OCR')
-        install_path = winreg.QueryValueEx(key, 'InstallDir')[0]
-        winreg.CloseKey(key)
-        tesseract_exe = Path(install_path) / 'tesseract.exe'
-        if tesseract_exe.exists():
-            return str(tesseract_exe)
-    except Exception:
-        pass
-
-    return None
 
 
 class OCREngine:
@@ -121,13 +98,22 @@ class OCREngine:
         }
 
     def ocr_image(self, image: Image.Image,
-                  config: Optional[str] = None) -> str:
+                  config: Optional[str] = None,
+                  preprocess: bool = True) -> str:
         """
-        OCR an image using Tesseract.
+        OCR an image using Tesseract with optional preprocessing.
+
+        V4.9: Added preprocessing pipeline for improved accuracy:
+        - Grayscale conversion
+        - Noise reduction
+        - Binarization (Otsu thresholding)
+        - Border addition
+        - Dark text on light background enforcement
 
         Args:
             image: PIL Image to OCR
             config: Tesseract config string (default: --psm 6 --oem 3)
+            preprocess: Whether to apply preprocessing (default: True)
 
         Returns:
             Extracted text
@@ -148,7 +134,27 @@ class OCREngine:
             logger.debug(f"Tesseract path: {self.tesseract_path}")
             logger.debug(f"Image size: {image.size}, mode: {image.mode}")
 
-            text = pytesseract.image_to_string(image, config=config)
+            # V5.0: Use LSTM-friendly preprocessing (no binarization)
+            # Research: Tesseract LSTM does internal preprocessing, external binarization hurts accuracy
+            if preprocess:
+                processed_image = preprocess_for_ocr(
+                    image,
+                    apply_grayscale=True,
+                    apply_denoise=True,
+                    apply_border=True,
+                    border_size=10,
+                    invert_if_light_text=True,
+                    preprocessing_mode='lstm',  # Skip binarization for LSTM
+                )
+                logger.debug(f"Preprocessed image size: {processed_image.size}, mode: {processed_image.mode}")
+            else:
+                # At minimum, ensure compatible image mode
+                if image.mode == 'RGBA':
+                    processed_image = image.convert('RGB')
+                else:
+                    processed_image = image
+
+            text = pytesseract.image_to_string(processed_image, config=config)
 
             logger.debug(f"OCR successful, extracted {len(text)} characters")
             return text
@@ -180,16 +186,24 @@ class OCREngine:
             return ''
 
     def ocr_image_with_boxes(self, image: Image.Image,
-                             config: Optional[str] = None) -> List[Dict[str, Any]]:
+                             config: Optional[str] = None,
+                             preprocess: bool = True,
+                             min_confidence: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         OCR an image and return text with bounding boxes.
+
+        V4.9: Added preprocessing and confidence filtering.
 
         Args:
             image: PIL Image to OCR
             config: Tesseract config string
+            preprocess: Whether to apply preprocessing (default: True)
+            min_confidence: Minimum confidence threshold (0-100).
+                           Default: OCR_CONFIDENCE_THRESHOLD from constants.
+                           Set to 0 or None to disable filtering.
 
         Returns:
-            List of dicts with text, bbox, confidence
+            List of dicts with text, bbox, confidence (filtered by confidence)
         """
         if not TESSERACT_AVAILABLE or self.tesseract_path is None:
             logger.warning("Tesseract not available for ocr_image_with_boxes")
@@ -198,16 +212,53 @@ class OCREngine:
         if config is None:
             config = TESSERACT_CONFIG['page']
 
+        # Set default confidence threshold
+        if min_confidence is None:
+            min_confidence = OCR_CONFIDENCE_THRESHOLD
+
         try:
+            # V5.0: Use LSTM-friendly preprocessing (no binarization)
+            if preprocess:
+                processed_image = preprocess_for_ocr(
+                    image,
+                    apply_grayscale=True,
+                    apply_denoise=True,
+                    apply_border=True,
+                    border_size=10,
+                    invert_if_light_text=True,
+                    preprocessing_mode='lstm',  # Skip binarization for LSTM
+                )
+            else:
+                if image.mode == 'RGBA':
+                    processed_image = image.convert('RGB')
+                else:
+                    processed_image = image
+
             # Get detailed data
-            data = pytesseract.image_to_data(image, config=config, output_type=pytesseract.Output.DICT)
+            data = pytesseract.image_to_data(processed_image, config=config, output_type=pytesseract.Output.DICT)
 
             results = []
             n_boxes = len(data['text'])
+            filtered_count = 0
 
             for i in range(n_boxes):
                 text = data['text'][i].strip()
+                conf = data['conf'][i]
+
+                # Convert confidence to int if it's a string
+                if isinstance(conf, str):
+                    try:
+                        conf = int(conf)
+                    except ValueError:
+                        conf = 0
+
                 if text:  # Only include non-empty text
+                    # V4.9: Apply confidence filtering
+                    if min_confidence > 0 and conf < min_confidence:
+                        filtered_count += 1
+                        logger.debug(f"Filtered low-confidence text: '{text}' (conf={conf})")
+                        continue
+
                     results.append({
                         'text': text,
                         'bbox': (
@@ -216,12 +267,15 @@ class OCREngine:
                             data['left'][i] + data['width'][i],
                             data['top'][i] + data['height'][i]
                         ),
-                        'confidence': data['conf'][i],
+                        'confidence': conf,
                         'level': data['level'][i],
                         'block_num': data['block_num'][i],
                         'line_num': data['line_num'][i],
                         'word_num': data['word_num'][i],
                     })
+
+            if filtered_count > 0:
+                logger.debug(f"Filtered {filtered_count} low-confidence results (threshold={min_confidence})")
 
             return results
         except Exception as e:

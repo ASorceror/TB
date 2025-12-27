@@ -1,10 +1,16 @@
 """
-Blueprint Processor V4.1 - Page Normalizer
+Blueprint Processor V4.9 - Page Normalizer
 Detects orientation and rotates pages to 0 degrees.
 Implements ROTATION-FIRST principle: correct orientation BEFORE title block detection.
+
+V4.9 Changes:
+- Centralized find_tesseract() moved to ocr_utils.py
+- Added deskew_image() for small angle correction
+- Added apply_deskew parameter to normalize() method
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
 from PIL import Image
@@ -13,7 +19,10 @@ import numpy as np
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+logger = logging.getLogger(__name__)
+
 from constants import TESSERACT_CONFIG, THRESHOLDS
+from core.ocr_utils import find_tesseract, deskew_image
 
 # Try to import pytesseract
 try:
@@ -28,41 +37,6 @@ try:
     CV2_AVAILABLE = True
 except ImportError:
     CV2_AVAILABLE = False
-
-
-def find_tesseract() -> Optional[str]:
-    """Find Tesseract executable path."""
-    import shutil
-
-    # Check PATH first
-    tesseract_path = shutil.which('tesseract')
-    if tesseract_path:
-        return tesseract_path
-
-    # Common Windows locations
-    common_paths = [
-        Path('C:/Program Files/Tesseract-OCR/tesseract.exe'),
-        Path('C:/Program Files (x86)/Tesseract-OCR/tesseract.exe'),
-        Path.home() / 'AppData/Local/Programs/Tesseract-OCR/tesseract.exe',
-    ]
-
-    for path in common_paths:
-        if path.exists():
-            return str(path)
-
-    # Try Windows Registry
-    try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Tesseract-OCR')
-        install_path = winreg.QueryValueEx(key, 'InstallDir')[0]
-        winreg.CloseKey(key)
-        tesseract_exe = Path(install_path) / 'tesseract.exe'
-        if tesseract_exe.exists():
-            return str(tesseract_exe)
-    except Exception:
-        pass
-
-    return None
 
 
 class PageNormalizer:
@@ -250,13 +224,20 @@ class PageNormalizer:
         }
 
     def normalize(self, image: Image.Image,
-                  force_angle: Optional[int] = None) -> Tuple[Image.Image, Dict[str, Any]]:
+                  force_angle: Optional[int] = None,
+                  apply_deskew: bool = True,
+                  max_deskew_angle: float = 5.0) -> Tuple[Image.Image, Dict[str, Any]]:
         """
         Detect orientation and rotate image to 0 degrees.
+
+        V4.9: Added deskew capability for small angle correction.
+        Tesseract accuracy drops significantly with skew > 2 degrees.
 
         Args:
             image: PIL Image to normalize
             force_angle: Optional angle to force (overrides detection)
+            apply_deskew: Whether to apply small-angle deskew correction (default: True)
+            max_deskew_angle: Maximum skew angle to correct (default: 5.0 degrees)
 
         Returns:
             Tuple of (rotated_image, orientation_info)
@@ -272,7 +253,7 @@ class PageNormalizer:
 
         angle = orientation_info['angle']
 
-        # Rotate image to correct orientation
+        # Rotate image to correct orientation (90-degree increments)
         if angle == 90:
             rotated = image.transpose(Image.ROTATE_270)
         elif angle == 180:
@@ -282,9 +263,22 @@ class PageNormalizer:
         else:
             rotated = image
 
+        # V4.9: Apply small-angle deskew correction
+        deskew_angle = 0.0
+        if apply_deskew:
+            try:
+                rotated, deskew_angle = deskew_image(rotated, max_angle=max_deskew_angle)
+                if abs(deskew_angle) > 0.1:
+                    logger.debug(f"Applied deskew correction of {deskew_angle:.2f}°")
+            except Exception as e:
+                logger.warning(f"Deskew failed: {e}")
+                deskew_angle = 0.0
+
         orientation_info['original_size'] = image.size
         orientation_info['normalized_size'] = rotated.size
         orientation_info['rotation_applied'] = angle
+        orientation_info['deskew_angle'] = deskew_angle
+        orientation_info['deskew_applied'] = abs(deskew_angle) > 0.1
 
         return rotated, orientation_info
 

@@ -1,0 +1,36 @@
+{
+  "template_id": "d67f7880-1324-41e7-ae97-467bc6f2d508",
+  "pdf_hash": "15061f35b2dd4a89",
+  "source_pdf": "2025_0319_CM RFP_drawings.pdf",
+  "created_at": "2025-12-25T14:47:03.794846Z",
+  "pages_analyzed": 42,
+  "quality_pages_used": 33,
+  "confidence": 0.9,
+  "title_block_bbox": [
+    0.65,
+    0.75,
+    1.0,
+    1.0
+  ],
+  "title_zone_bbox": [
+    0.0,
+    0.1,
+    1.0,
+    0.5
+  ],
+  "exclusion_patterns": [
+    "PROJECT\\s*(NUMBER|NO\\.?|#)",
+    "SHEET\\s*(NUMBER|NO\\.?|#)",
+    "DATE\\s*:?",
+    "SCALE\\s*:?",
+    "DRAWN\\s*BY",
+    "CHECKED\\s*BY",
+    "APPROVED\\s*BY",
+    "REVISION",
+    "REV\\s*:?"
+  ],
+  "typical_length_min": 8,
+  "typical_length_max": 35,
+  "vector_pages": 36,
+  "scanned_pages": 6
+}

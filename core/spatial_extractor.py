@@ -1,6 +1,8 @@
 """
-Blueprint Processor V4.2.1 - Spatial Zone Extractor
+Blueprint Processor V4.5 - Spatial Zone Extractor
 Extracts sheet titles from vector PDFs using text position and font analysis.
+
+V4.5: Filter text to only consider spans inside title block region.
 """
 
 import re
@@ -41,6 +43,54 @@ MIN_FONT_SIZE = 8.0
 
 # Base font size for scoring (title text is usually larger)
 BASE_FONT_SIZE = 12.0
+
+
+def _bbox_inside_region(
+    span_bbox: Tuple[float, float, float, float],
+    region_bbox: Tuple[float, float, float, float],
+    tolerance: float = 0.05  # 5% tolerance for edge text
+) -> bool:
+    """
+    Check if a text span's CENTER is inside a region bbox.
+
+    V4.5: Changed from overlap check to center-point check.
+    This prevents text that's mostly outside the region from being included
+    just because its edge touches the region.
+
+    Args:
+        span_bbox: Text span bounding box (x0, y0, x1, y1) in points
+        region_bbox: Region bounding box (x0, y0, x1, y1) in points
+        tolerance: Fraction of region size to extend bounds (default 5%)
+
+    Returns:
+        True if span CENTER is inside the region (with tolerance)
+    """
+    # Safety check for None or invalid bboxes
+    if not region_bbox or len(region_bbox) < 4:
+        return True  # If no region defined, accept all text
+    if not span_bbox or len(span_bbox) < 4:
+        return False  # Invalid span bbox
+
+    # Calculate span center
+    span_center_x = (span_bbox[0] + span_bbox[2]) / 2
+    span_center_y = (span_bbox[1] + span_bbox[3]) / 2
+
+    # Extend region bounds slightly to catch edge text
+    region_width = region_bbox[2] - region_bbox[0]
+    region_height = region_bbox[3] - region_bbox[1]
+
+    extended_x0 = region_bbox[0] - (region_width * tolerance)
+    extended_y0 = region_bbox[1] - (region_height * tolerance)
+    extended_x1 = region_bbox[2] + (region_width * tolerance)
+    extended_y1 = region_bbox[3] + (region_height * tolerance)
+
+    # Check if span CENTER is inside extended region
+    if span_center_x < extended_x0 or span_center_x > extended_x1:
+        return False
+    if span_center_y < extended_y0 or span_center_y > extended_y1:
+        return False
+
+    return True
 
 
 class SpatialExtractor:
@@ -92,8 +142,16 @@ class SpatialExtractor:
         # Get title zone within title block
         title_zone_bbox = get_title_zone_bbox(title_block_bbox)
 
+        # V4.5: Log the title block region for debugging
+        logger.debug(
+            f"Spatial extraction: title_block_bbox={title_block_bbox}, "
+            f"title_zone_bbox={title_zone_bbox}"
+        )
+
         # Extract and score text spans
         candidates = []
+        filtered_count = 0
+        total_spans = 0
 
         for block in blocks:
             if block.get("type") != 0:  # 0 = text block
@@ -105,8 +163,14 @@ class SpatialExtractor:
                     if not text or len(text) < 3:
                         continue
 
+                    total_spans += 1
                     span_bbox = span.get("bbox", (0, 0, 0, 0))
                     font_size = span.get("size", 12.0)
+
+                    # V4.5: Skip text outside title block region (if region is defined)
+                    if title_block_bbox and not _bbox_inside_region(span_bbox, title_block_bbox):
+                        filtered_count += 1
+                        continue
 
                     # Score this candidate
                     score_result = self._score_candidate(
@@ -126,6 +190,13 @@ class SpatialExtractor:
                             "zone": score_result["zone"],
                             "reasons": score_result["reasons"],
                         })
+
+        # V4.5: Log filtering stats
+        logger.debug(
+            f"Spatial extraction: {total_spans} spans total, "
+            f"{filtered_count} filtered (outside title block), "
+            f"{len(candidates)} candidates remaining"
+        )
 
         # Sort by score descending
         candidates.sort(key=lambda x: x["score"], reverse=True)

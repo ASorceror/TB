@@ -1,0 +1,36 @@
+{
+  "template_id": "fc190abc-b80f-4633-ab24-b85b0a10f03f",
+  "pdf_hash": "1488a56ee33e3216",
+  "source_pdf": "Full Set_080219.pdf",
+  "created_at": "2025-12-25T15:17:46.041575Z",
+  "pages_analyzed": 18,
+  "quality_pages_used": 5,
+  "confidence": 0.7,
+  "title_block_bbox": [
+    0.65,
+    0.75,
+    1.0,
+    1.0
+  ],
+  "title_zone_bbox": [
+    0.0,
+    0.1,
+    1.0,
+    0.5
+  ],
+  "exclusion_patterns": [
+    "PROJECT\\s*(NUMBER|NO\\.?|#)",
+    "SHEET\\s*(NUMBER|NO\\.?|#)",
+    "DATE\\s*:?",
+    "SCALE\\s*:?",
+    "DRAWN\\s*BY",
+    "CHECKED\\s*BY",
+    "APPROVED\\s*BY",
+    "REVISION",
+    "REV\\s*:?"
+  ],
+  "typical_length_min": 14,
+  "typical_length_max": 48,
+  "vector_pages": 4,
+  "scanned_pages": 14
+}

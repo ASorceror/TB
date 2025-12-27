@@ -46,6 +46,28 @@ If you cannot clearly identify a sheet title, respond with exactly: UNKNOWN
 
 Respond with ONLY the sheet title text, nothing else. No explanations, no prefixes like "Title:" - just the title itself."""
 
+# Vision API prompt for sheet number extraction
+SHEET_NUMBER_PROMPT = """Look at this title block image from a construction/architectural blueprint.
+
+Extract ONLY the sheet number - this is a code that identifies the drawing (like "A-1", "A1.0", "S-201", "M-1.1", "E-2", "T-1", "D-1", etc.).
+
+The sheet number is usually:
+- Located at the bottom of the title block in a box labeled "Sheet" or "Sheet No."
+- A short alphanumeric code with letters and numbers
+- Often includes a prefix (A for Architectural, S for Structural, M for Mechanical, E for Electrical, P for Plumbing, etc.)
+- May include dots, dashes, or decimals (like A-2.1, M1.1, E-4)
+
+DO NOT return:
+- The sheet title (like "Floor Plan", "Elevations")
+- Project numbers or job numbers
+- Company names or addresses
+- Dates or scales
+- Revision numbers
+
+If you cannot clearly identify a sheet number, respond with exactly: UNKNOWN
+
+Respond with ONLY the sheet number, nothing else. No explanations, no prefixes - just the sheet number itself (e.g., "A-1" or "M-2.1")."""
+
 
 class VisionExtractor:
     """
@@ -258,6 +280,160 @@ class VisionExtractor:
                 "cached": False,
                 "error": error_msg
             }
+
+    def extract_sheet_number(
+        self,
+        image: Image.Image,
+        use_cache: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Extract sheet number from a title block image using Vision API.
+
+        This is particularly useful for handwritten/sketch fonts that Tesseract cannot read.
+
+        Args:
+            image: PIL Image of the title block
+            use_cache: Whether to use cached results (default True)
+
+        Returns:
+            Dict with keys:
+                - sheet_number: extracted sheet number string or None
+                - confidence: float 0.0-1.0 (0.90 for vision)
+                - method: 'vision_api' if successful
+                - cached: True if result was from cache
+                - error: error message if failed
+        """
+        # Use a different cache prefix for sheet numbers
+        image_hash = "sn_" + self._get_image_hash(image)
+        if use_cache and image_hash in self._cache:
+            cached_sn = self._cache[image_hash]
+            logger.debug(f"Cache hit for sheet number {image_hash}: {cached_sn}")
+            return {
+                "sheet_number": cached_sn if cached_sn != "UNKNOWN" else None,
+                "confidence": 0.90 if cached_sn != "UNKNOWN" else 0.0,
+                "method": "vision_api" if cached_sn != "UNKNOWN" else None,
+                "cached": True,
+                "error": None
+            }
+
+        # Check API availability (after cache check)
+        if not self._api_available:
+            return {
+                "sheet_number": None,
+                "confidence": 0.0,
+                "method": None,
+                "cached": False,
+                "error": "Vision API not available"
+            }
+
+        # Check rate limits
+        if not self._check_rate_limit():
+            return {
+                "sheet_number": None,
+                "confidence": 0.0,
+                "method": None,
+                "cached": False,
+                "error": "Rate limited"
+            }
+
+        # Make API call
+        try:
+            result = self._call_vision_api_for_sheet_number(image)
+            self._record_call()
+
+            # Cache the result
+            self._cache[image_hash] = result
+
+            if result == "UNKNOWN" or not result:
+                return {
+                    "sheet_number": None,
+                    "confidence": 0.0,
+                    "method": None,
+                    "cached": False,
+                    "error": None
+                }
+
+            return {
+                "sheet_number": result,
+                "confidence": 0.90,
+                "method": "vision_api",
+                "cached": False,
+                "error": None
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+
+            # Check for rate limit error
+            if "429" in error_msg or "rate" in error_msg.lower():
+                logger.warning(f"Vision API rate limited: {e}")
+                # For sheet numbers, don't retry on rate limit - just return error
+                return {
+                    "sheet_number": None,
+                    "confidence": 0.0,
+                    "method": None,
+                    "cached": False,
+                    "error": f"Rate limited: {error_msg}"
+                }
+
+            logger.error(f"Vision API error extracting sheet number: {e}")
+            return {
+                "sheet_number": None,
+                "confidence": 0.0,
+                "method": None,
+                "cached": False,
+                "error": error_msg
+            }
+
+    def _call_vision_api_for_sheet_number(self, image: Image.Image) -> str:
+        """
+        Make the Vision API call to extract sheet number.
+
+        Args:
+            image: PIL Image
+
+        Returns:
+            Extracted sheet number string or "UNKNOWN"
+        """
+        import base64
+
+        # Resize image if needed to stay under API limits (8000 pixels max)
+        image = self._resize_image_if_needed(image)
+
+        # Convert PIL Image to base64
+        img_bytes = io.BytesIO()
+        image.save(img_bytes, format='PNG')
+        img_data = base64.standard_b64encode(img_bytes.getvalue()).decode('utf-8')
+
+        logger.debug(f"Calling Vision API for sheet number (call #{self._calls_this_pdf + 1} this PDF)")
+
+        message = self._client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=50,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": img_data
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": SHEET_NUMBER_PROMPT
+                    }
+                ]
+            }]
+        )
+
+        # Extract response text
+        response_text = message.content[0].text.strip()
+        logger.debug(f"Vision API sheet number response: {response_text}")
+
+        return response_text
 
     def _resize_image_if_needed(self, image: Image.Image, max_size: int = 7500) -> Image.Image:
         """

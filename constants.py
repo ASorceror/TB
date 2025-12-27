@@ -87,7 +87,7 @@ TITLE_BLOCK_REGIONS: Dict[str, Tuple[float, float, float, float]] = {
     'bottom_strip': (0.0, 0.85, 1.0, 1.0),        # Full bottom
 }
 
-# Search order for regions
+# Search order for regions (legacy - used as fallback)
 REGION_SEARCH_ORDER: List[str] = [
     'bottom_right',
     'bottom_right_ext',
@@ -97,12 +97,42 @@ REGION_SEARCH_ORDER: List[str] = [
 ]
 
 # =============================================================================
+# SECTION 4.5.1: TITLE BLOCK PHYSICAL DIMENSIONS (V4.5)
+# Standard architectural title blocks have fixed physical sizes regardless
+# of sheet size. We use these to calculate dynamic region percentages.
+# =============================================================================
+TITLE_BLOCK_PHYSICAL = {
+    'width_inches': 6.5,      # Standard title block width (slightly generous)
+    'height_inches': 4.0,     # Standard title block height
+    'max_width_pct': 0.35,    # Never exceed 35% of page width (for small sheets)
+    'max_height_pct': 0.30,   # Never exceed 30% of page height
+}
+
+# =============================================================================
 # SECTION 4.6: TESSERACT CONFIGURATION
+# V4.9: Expanded PSM modes for different use cases
+# PSM Modes:
+#   0 = OSD only (orientation detection)
+#   3 = Fully automatic page segmentation (default)
+#   4 = Single column of text (good for title blocks)
+#   6 = Single uniform block of text
+#   7 = Single text line
+#   8 = Single word
+#   11 = Sparse text (find as much text as possible)
+#   12 = Sparse text with OSD
+# OEM Modes:
+#   0 = Legacy engine only
+#   1 = LSTM neural net only
+#   3 = Default (best available)
 # =============================================================================
 TESSERACT_CONFIG = {
-    'osd': '--psm 0',                    # Orientation detection
-    'page': '--psm 6 --oem 3',           # Page OCR
-    'title_block': '--psm 6 --oem 3',    # Title block OCR
+    'osd': '--psm 0',                    # Orientation detection only
+    'page': '--psm 6 --oem 3',           # Single uniform block (standard pages)
+    'title_block': '--psm 4 --oem 3',    # Single column (better for title blocks)
+    'single_line': '--psm 7 --oem 3',    # Single text line
+    'single_word': '--psm 8 --oem 3',    # Single word
+    'sparse': '--psm 11 --oem 3',        # Sparse text (find all text)
+    'auto': '--psm 3 --oem 3',           # Fully automatic segmentation
 }
 
 # =============================================================================
@@ -119,8 +149,15 @@ THRESHOLDS = {
 
 # =============================================================================
 # RENDERING SETTINGS
+# V4.9: Increased DPI from 200 to 300 for better OCR accuracy
+# Tesseract works best at 300+ DPI, accuracy drops below 10pt at 200 DPI
 # =============================================================================
-DEFAULT_DPI: int = 200
+DEFAULT_DPI: int = 300
+
+# OCR-specific settings
+OCR_MIN_DPI: int = 300          # Minimum DPI for OCR operations
+OCR_TARGET_DPI: int = 300       # Target DPI when upscaling for OCR
+OCR_CONFIDENCE_THRESHOLD: int = 60  # Minimum confidence score (0-100)
 
 # =============================================================================
 # FILE PATHS (using forward slashes - pathlib will handle conversion)
@@ -375,3 +412,59 @@ SHEET_NUMBER_BLACKLIST = {
     "NOW", "OLD", "OUR", "OUT", "OWN", "SAY", "SHE", "THE", "TOO",
     "TRY", "TWO", "USE", "WAY", "WHO", "WHY", "YET", "YOU",
 }
+
+# =============================================================================
+# SECTION 4.11: QUALITY FILTER (V4.3)
+# =============================================================================
+
+QUALITY_KEYWORDS: List[str] = [
+    'PLAN', 'ELEVATION', 'SECTION', 'DETAIL', 'SCHEDULE', 'DIAGRAM',
+    'LAYOUT', 'VIEW', 'FLOOR', 'CEILING', 'ROOF', 'SITE', 'FOUNDATION',
+    'FRAMING', 'REFLECTED', 'ENLARGED', 'DEMOLITION', 'INTERIOR',
+    'EXTERIOR', 'NORTH', 'SOUTH', 'EAST', 'WEST', 'FRONT', 'REAR',
+    'WALL', 'DOOR', 'WINDOW', 'STAIR', 'PARTITION', 'ELECTRICAL',
+    'MECHANICAL', 'PLUMBING', 'HVAC', 'FIRE', 'STRUCTURAL', 'CIVIL',
+    'LANDSCAPE', 'NOTES', 'SPECIFICATIONS', 'CODE', 'ADA', 'FINISH',
+    'FIXTURE', 'EQUIPMENT', 'RISER', 'ISOMETRIC', 'SCHEMATIC',
+]
+
+# Patterns that indicate garbage (always reject even if contains keywords)
+GARBAGE_PATTERNS: List[str] = [
+    r'^Part\s+\d+',              # Spec section headers: "Part 1 - General"
+    r'^\d+$',                    # Pure numbers: "1425"
+    r'^[A-Z]\d+(\.\d+)?$',       # Sheet numbers: "A101", "A1.0"
+    r'^[A-Z]{1,2}-\d+$',         # Sheet numbers: "A-101", "M-201"
+    r'Permit\s*Set',             # Project descriptors
+    r'Gmp[/\s]',                 # GMP references
+    r'^(Project|Sheet)\s*(Number|No|#)',  # Labels
+    r'^(Date|Scale|Drawn|Checked|Approved)\b',  # Field labels
+]
+
+QUALITY_THRESHOLDS: Dict[str, any] = {
+    'min_title_length': 5,
+    'min_word_count': 2,
+    'min_length_if_one_word': 15,
+    'max_repetition_percent': 0.20,
+    'min_quality_for_learning': 5,
+}
+
+# =============================================================================
+# SECTION 4.12: TEMPLATE LEARNING (V4.3)
+# =============================================================================
+
+TEMPLATE_DEFAULTS: Dict[str, any] = {
+    'title_block_bbox': [0.65, 0.75, 1.0, 1.0],  # Bottom-right 35% x 25%
+    'title_zone_bbox': [0.0, 0.10, 1.0, 0.50],   # Top half of title block
+}
+
+STANDARD_EXCLUSION_PATTERNS: List[str] = [
+    r'PROJECT\s*(NUMBER|NO\.?|#)',
+    r'SHEET\s*(NUMBER|NO\.?|#)',
+    r'DATE\s*:?',
+    r'SCALE\s*:?',
+    r'DRAWN\s*BY',
+    r'CHECKED\s*BY',
+    r'APPROVED\s*BY',
+    r'REVISION',
+    r'REV\s*:?',
+]

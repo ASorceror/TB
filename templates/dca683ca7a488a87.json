@@ -1,0 +1,36 @@
+{
+  "template_id": "edefcb96-f567-4972-b6e5-3700f55cad7a",
+  "pdf_hash": "dca683ca7a488a87",
+  "source_pdf": "0_full_permit_set_chiro_one_evergreen_park.pdf",
+  "created_at": "2025-12-25T14:33:41.223824Z",
+  "pages_analyzed": 12,
+  "quality_pages_used": 8,
+  "confidence": 0.9,
+  "title_block_bbox": [
+    0.65,
+    0.75,
+    1.0,
+    1.0
+  ],
+  "title_zone_bbox": [
+    0.0,
+    0.1,
+    1.0,
+    0.5
+  ],
+  "exclusion_patterns": [
+    "PROJECT\\s*(NUMBER|NO\\.?|#)",
+    "SHEET\\s*(NUMBER|NO\\.?|#)",
+    "DATE\\s*:?",
+    "SCALE\\s*:?",
+    "DRAWN\\s*BY",
+    "CHECKED\\s*BY",
+    "APPROVED\\s*BY",
+    "REVISION",
+    "REV\\s*:?"
+  ],
+  "typical_length_min": 12,
+  "typical_length_max": 60,
+  "vector_pages": 3,
+  "scanned_pages": 9
+}

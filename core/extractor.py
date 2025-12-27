@@ -1,7 +1,17 @@
 """
-Blueprint Processor V4.7.1 - Field Extractor
+Blueprint Processor V5.0 - Field Extractor
 Extracts structured fields from text using multiple strategies.
 Integrates with Validator for sheet title validation.
+
+V5.0 Changes:
+- Uses LSTM-friendly preprocessing (no binarization) for Tesseract LSTM
+- Research: External binarization hurts accuracy for thin characters (ST-01 → T-01)
+- Added Fallback 5: Outline font OCR with heavy dilation for thin stroke fonts
+- Added O/0 confusion post-processing fix for architectural sheet numbers
+
+V4.9 Changes:
+- Uses centralized preprocess_for_ocr from ocr_utils for consistent preprocessing
+- Improved OCR accuracy with proper binarization and noise reduction
 
 V4.7.1 Changes:
 - Reordered strategies: bbox spatial proximity (Strategy 4) now runs before
@@ -48,11 +58,13 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-from constants import PATTERNS, LABELS, DISCIPLINE_CODES, TITLE_CONFIDENCE, REVIEW_THRESHOLD, SHEET_NUMBER_BLACKLIST, TITLE_LABEL_BLACKLIST
+from constants import PATTERNS, LABELS, DISCIPLINE_CODES, TITLE_CONFIDENCE, REVIEW_THRESHOLD, SHEET_NUMBER_BLACKLIST, TITLE_LABEL_BLACKLIST, TESSERACT_CONFIG
 from validation.validator import Validator
 from core.drawing_index import DrawingIndexParser
 from core.spatial_extractor import SpatialExtractor
 from core.vision_extractor import VisionExtractor
+from core.ocr_engine import OCREngine
+from core.ocr_utils import preprocess_for_ocr, upscale_for_ocr
 
 
 class Extractor:
@@ -71,6 +83,7 @@ class Extractor:
         self._index_parser = DrawingIndexParser(ocr_engine=ocr_engine)
         self._spatial_extractor = SpatialExtractor()
         self._vision_extractor = VisionExtractor()
+        self._ocr_engine = ocr_engine if ocr_engine else OCREngine()
         self._drawing_index: Dict[str, str] = {}
 
     def reset_for_new_pdf(self):
@@ -148,6 +161,8 @@ class Extractor:
         Sheet numbers are typically in a small box on the edges of the title block.
         We check BOTH left and right edges because page rotation can flip the layout.
 
+        V4.9: Uses centralized preprocess_for_ocr for consistent preprocessing.
+
         Args:
             title_block_image: PIL Image of the title block region
 
@@ -176,19 +191,23 @@ class Extractor:
                 if strip_width < 10 or strip_height < 10:
                     continue
 
-                # Upscale for better OCR quality
-                min_dimension = 800
-                scale = max(min_dimension / strip_width, min_dimension / strip_height, 2.0)
-                new_size = (int(strip_width * scale), int(strip_height * scale))
-                upscaled = edge_strip.resize(new_size, Image.Resampling.LANCZOS)
+                # V4.9: Use centralized upscaling
+                upscaled = upscale_for_ocr(edge_strip, min_height=50, target_height=200, max_scale=4.0)
 
-                # Enhance contrast for better OCR
-                enhancer = ImageEnhance.Contrast(upscaled)
-                enhanced = enhancer.enhance(1.5)
+                # V5.0: Use LSTM-friendly preprocessing (no binarization)
+                # Research: Tesseract LSTM does internal preprocessing, external binarization hurts accuracy
+                preprocessed = preprocess_for_ocr(
+                    upscaled,
+                    apply_grayscale=True,
+                    apply_denoise=True,
+                    apply_border=True,
+                    border_size=10,
+                    invert_if_light_text=True,
+                    preprocessing_mode='lstm',  # Skip binarization for LSTM
+                )
 
                 # Use PSM 4 (single column) which works better for title blocks
-                custom_config = r'--oem 3 --psm 4'
-                text = pytesseract.image_to_string(enhanced, config=custom_config)
+                text = pytesseract.image_to_string(preprocessed, config=TESSERACT_CONFIG['title_block'])
 
                 if text.strip():
                     all_text.append(text.upper())
@@ -201,6 +220,164 @@ class Extractor:
         except Exception as e:
             logger.debug(f"Title block OCR failed: {e}")
             return None
+
+    def _ocr_outline_font_sheet_number(self, title_block_image) -> Optional[str]:
+        """
+        V5.0: Specialized OCR for thin outline font sheet numbers.
+
+        Many architectural blueprints use thin outline/stroke fonts for sheet numbers
+        that standard OCR struggles to read. This method applies heavy dilation
+        to thicken the strokes before OCR.
+
+        Args:
+            title_block_image: PIL Image of the title block region
+
+        Returns:
+            Extracted sheet number or None
+        """
+        if not TESSERACT_AVAILABLE or title_block_image is None:
+            return None
+
+        try:
+            import cv2
+            import numpy as np
+
+            width, height = title_block_image.size
+
+            # Get bottom portion of title block (where sheet number typically is)
+            bottom_region = title_block_image.crop((
+                int(width * 0.5),   # Right half
+                int(height * 0.75), # Bottom 25%
+                width,
+                height
+            ))
+
+            # First, try to find "SHEET NUMBER" label to locate value box
+            gray = bottom_region.convert('L')
+            data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
+
+            # Look for SHEET or NUMBER label
+            label_bottom = None
+            for i, text in enumerate(data['text']):
+                if 'SHEET' in text.upper() or 'NUMBER' in text.upper():
+                    label_bottom = data['top'][i] + data['height'][i]
+                    break
+
+            # Crop value area (below label or bottom portion)
+            br_width, br_height = bottom_region.size
+            if label_bottom:
+                value_region = bottom_region.crop((0, label_bottom + 5, br_width, br_height))
+            else:
+                value_region = bottom_region.crop((0, int(br_height * 0.4), br_width, br_height))
+
+            # Upscale for better OCR
+            vr_width, vr_height = value_region.size
+            if vr_width > 10 and vr_height > 10:
+                value_region = value_region.resize(
+                    (vr_width * 2, vr_height * 2),
+                    Image.Resampling.LANCZOS
+                )
+
+            # Convert to numpy and apply dilation
+            img_array = np.array(value_region.convert('L'))
+
+            # Ensure dark text on light background
+            if np.mean(img_array) < 127:
+                img_array = cv2.bitwise_not(img_array)
+
+            # Threshold
+            _, binary = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # Heavy dilation to thicken thin outline font
+            kernel = np.ones((5, 5), np.uint8)
+            dilated = cv2.erode(binary, kernel, iterations=2)
+
+            dilated_img = Image.fromarray(dilated)
+
+            # OCR with PSM 6 (block of text) - works better than PSM 8 for this
+            # Note: Character whitelist can break OCR on Windows, so we skip it
+            # and rely on post-processing to clean up results
+            config = '--psm 6 --oem 3'
+            result = pytesseract.image_to_string(dilated_img, config=config).strip()
+
+            if result:
+                # Post-process: Fix O/0 confusion
+                # In sheet numbers, after the prefix letter(s), "O" should be "0"
+                result = self._fix_sheet_number_ocr(result)
+                logger.debug(f"Outline font OCR result: '{result}'")
+                return result
+
+        except Exception as e:
+            logger.debug(f"Outline font OCR failed: {e}")
+
+        return None
+
+    def _fix_sheet_number_ocr(self, text: str) -> str:
+        """
+        Fix common OCR errors in sheet numbers.
+
+        - Convert O/Q to 0 (common outline font confusion where 0 is read as letter)
+        - Convert I/l to 1 in numeric context
+        - Clean up artifacts
+        - Extract sheet number pattern from multi-line results
+
+        Sheet number format: 1-2 letter prefix + digits + optional decimal
+        Common prefixes: A, M, E, S, D, T, P, C, G, L, R, AD, ST
+        """
+        import re
+
+        if not text:
+            return text
+
+        # Take first line if multi-line
+        text = text.split('\n')[0].strip()
+
+        # Remove non-alphanumeric except . and -
+        text = re.sub(r'[^A-Za-z0-9.\-]', '', text).upper()
+
+        if not text:
+            return text
+
+        # Common sheet number prefixes (1-2 chars)
+        valid_prefixes = {'A', 'M', 'E', 'S', 'D', 'T', 'P', 'C', 'G', 'L', 'R',
+                        'AD', 'ST', 'AS', 'EL', 'RC', 'FP', 'SP', 'MP', 'EP'}
+
+        # Strategy: The first 1-2 characters that form a valid prefix are kept as letters
+        # Everything after should be treated as digits (O/Q -> 0, I -> 1)
+
+        prefix = ''
+        rest = text
+
+        # Check for 2-char prefix first, then 1-char
+        if len(text) >= 2 and text[:2] in valid_prefixes:
+            prefix = text[:2]
+            rest = text[2:]
+        elif len(text) >= 1 and text[0] in valid_prefixes:
+            prefix = text[0]
+            rest = text[1:]
+        else:
+            # First char is the prefix even if not in valid_prefixes
+            prefix = text[0] if text else ''
+            rest = text[1:] if len(text) > 1 else ''
+
+        # Convert OCR misreads in the numeric portion
+        # O, Q -> 0 (common for outline fonts)
+        # I, l -> 1
+        rest = rest.replace('O', '0').replace('Q', '0')
+        rest = rest.replace('I', '1').replace('l', '1')
+
+        result = prefix + rest
+
+        # Validate it looks like a sheet number
+        if re.match(r'^[A-Z]{1,2}[-.]?\d{1,3}(?:\.\d{1,2})?$', result):
+            return result
+
+        # Try to extract a valid pattern from the result
+        sheet_match = re.search(r'([A-Z]{1,2}[-.]?\d{1,3}(?:\.\d{1,2})?)', result)
+        if sheet_match:
+            return sheet_match.group(1)
+
+        return result
 
     def extract_sheet_number(self, text: str, project_number: str = None,
                               text_blocks: list = None, page=None) -> Optional[str]:
@@ -448,6 +625,8 @@ class Extractor:
         This is used as a fallback for rotated pages where the standard
         title block detection may have found the wrong region.
 
+        V4.9: Uses centralized preprocess_for_ocr for consistent preprocessing.
+
         Args:
             page_image: PIL Image of the page
 
@@ -463,27 +642,135 @@ class Extractor:
 
             # Crop rightmost 15% of page (typical title block location)
             right_strip = page_image.crop((int(width * 0.85), 0, width, height))
-            strip_width, strip_height = right_strip.size
 
-            # Upscale for better OCR
-            min_dimension = 1000
-            scale = max(min_dimension / strip_width, 2.0)
-            new_size = (int(strip_width * scale), int(strip_height * scale))
-            upscaled = right_strip.resize(new_size, Image.Resampling.LANCZOS)
+            # V4.9: Use centralized upscaling
+            upscaled = upscale_for_ocr(right_strip, min_height=100, target_height=400, max_scale=3.0)
 
-            # Enhance contrast
-            enhancer = ImageEnhance.Contrast(upscaled)
-            enhanced = enhancer.enhance(1.5)
+            # V5.0: Use LSTM-friendly preprocessing (no binarization)
+            preprocessed = preprocess_for_ocr(
+                upscaled,
+                apply_grayscale=True,
+                apply_denoise=True,
+                apply_border=True,
+                border_size=10,
+                invert_if_light_text=True,
+                preprocessing_mode='lstm',  # Skip binarization for LSTM
+            )
 
             # OCR with PSM 4 (single column)
-            custom_config = r'--oem 3 --psm 4'
-            text = pytesseract.image_to_string(enhanced, config=custom_config)
+            text = pytesseract.image_to_string(preprocessed, config=TESSERACT_CONFIG['title_block'])
 
             logger.debug(f"Wide title block OCR extracted {len(text)} chars")
             return text.upper() if text.strip() else None
 
         except Exception as e:
             logger.debug(f"Wide title block OCR failed: {e}")
+            return None
+
+    def _ocr_vertical_right_edge_titleblock(self, page_image) -> Optional[str]:
+        """
+        OCR a vertical title block on the right edge of the page.
+
+        Some architectural drawings (e.g., Janesville-style) have narrow vertical
+        title blocks on the right edge where text is rotated 90 degrees.
+
+        This method:
+        1. Extracts the right 8% of the page (narrow vertical strip)
+        2. Rotates it 90 degrees clockwise to make text horizontal
+        3. OCRs with multiple preprocessing attempts
+        4. Returns text that can be searched for sheet numbers
+
+        Args:
+            page_image: PIL Image of the page
+
+        Returns:
+            OCR text from the rotated title block, or None if OCR fails
+        """
+        if not TESSERACT_AVAILABLE or page_image is None:
+            return None
+
+        try:
+            width, height = page_image.size
+
+            # Check aspect ratio - only apply to landscape pages
+            if width < height:
+                logger.debug("Skipping vertical titleblock OCR - page is portrait")
+                return None
+
+            logger.debug(f"Trying vertical right-edge title block OCR on image: {width}x{height}")
+
+            # Extract narrow right strip (8% of width)
+            right_strip = page_image.crop((int(width * 0.92), 0, width, height))
+
+            # Rotate 90 degrees clockwise to make vertical text horizontal
+            rotated = right_strip.rotate(-90, expand=True)
+            rot_w, rot_h = rotated.size
+            logger.debug(f"Rotated strip size: {rot_w}x{rot_h}")
+
+            # OCR the full rotated strip
+            # V5.0: Use LSTM-friendly preprocessing
+            preprocessed = preprocess_for_ocr(
+                rotated,
+                apply_grayscale=True,
+                apply_denoise=True,
+                apply_border=True,
+                border_size=10,
+                invert_if_light_text=True,
+                preprocessing_mode='lstm',
+            )
+
+            # Try multiple PSM modes
+            best_text = ""
+            for psm in [6, 4, 11]:
+                config = f'--psm {psm} --oem 3'
+                text = pytesseract.image_to_string(preprocessed, config=config)
+                if len(text.strip()) > len(best_text):
+                    best_text = text.strip()
+
+            if best_text:
+                logger.debug(f"Vertical titleblock OCR extracted {len(best_text)} chars")
+                return best_text.upper()
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Vertical titleblock OCR failed: {e}")
+            return None
+
+    def _extract_vertical_titleblock_image(self, page_image):
+        """
+        Extract the vertical title block region from the right edge of the page.
+
+        Used for Vision API extraction on Janesville-style blueprints that have
+        narrow vertical title blocks on the right edge with rotated text.
+
+        Args:
+            page_image: PIL Image of the page
+
+        Returns:
+            PIL Image of the rotated vertical title block, or None if not applicable
+        """
+        if page_image is None:
+            return None
+
+        try:
+            width, height = page_image.size
+
+            # Only apply to landscape pages
+            if width < height:
+                return None
+
+            # Extract right 10% of width (slightly wider than OCR version for context)
+            right_strip = page_image.crop((int(width * 0.90), 0, width, height))
+
+            # Rotate 90 degrees clockwise to make vertical text horizontal
+            rotated = right_strip.rotate(-90, expand=True)
+
+            logger.debug(f"Extracted vertical titleblock image: {rotated.size}")
+            return rotated
+
+        except Exception as e:
+            logger.debug(f"Failed to extract vertical titleblock image: {e}")
             return None
 
     def _ocr_page_edges_for_sheet_number(self, page_image, original_page_image=None, rotation_applied: int = 0) -> Optional[str]:
@@ -495,6 +782,8 @@ class Extractor:
 
         V4.4: Also tries the original (non-rotated) image if normalized image fails.
         For 180° rotation, searches opposite edges on original image.
+
+        V4.9: Uses centralized preprocess_for_ocr for consistent preprocessing.
 
         Args:
             page_image: PIL Image of the (normalized) full page
@@ -509,6 +798,8 @@ class Extractor:
 
         def ocr_edges(img, edge_regions, high_quality: bool = False):
             """OCR specified edge regions of an image.
+
+            V4.9: Uses centralized preprocessing.
 
             Args:
                 img: PIL Image to OCR
@@ -526,24 +817,25 @@ class Extractor:
                 if strip_width < 50 or strip_height < 50:
                     continue
 
-                # Upscale for better OCR quality
-                # Use higher scale for high_quality mode (small text in title blocks)
+                # V4.9: Use centralized upscaling
                 if high_quality:
-                    scale = 4.0  # Higher scale for small text
+                    upscaled = upscale_for_ocr(edge_strip, min_height=50, target_height=300, max_scale=4.0)
                 else:
-                    min_dimension = 800
-                    scale = max(min_dimension / strip_width, 2.0)
+                    upscaled = upscale_for_ocr(edge_strip, min_height=50, target_height=200, max_scale=3.0)
 
-                new_size = (int(strip_width * scale), int(strip_height * scale))
-                upscaled = edge_strip.resize(new_size, Image.Resampling.LANCZOS)
+                # V5.0: Use LSTM-friendly preprocessing (no binarization)
+                preprocessed = preprocess_for_ocr(
+                    upscaled,
+                    apply_grayscale=True,
+                    apply_denoise=True,
+                    apply_border=True,
+                    border_size=10,
+                    invert_if_light_text=True,
+                    preprocessing_mode='lstm',  # Skip binarization for LSTM
+                )
 
-                # Enhance contrast
-                enhancer = ImageEnhance.Contrast(upscaled)
-                enhanced = enhancer.enhance(1.5)
-
-                # OCR with PSM 4
-                custom_config = r'--oem 3 --psm 4'
-                text = pytesseract.image_to_string(enhanced, config=custom_config)
+                # OCR with PSM 4 (single column)
+                text = pytesseract.image_to_string(preprocessed, config=TESSERACT_CONFIG['title_block'])
 
                 if text.strip():
                     all_text.append(text.upper())
@@ -671,15 +963,118 @@ class Extractor:
 
         # Fallback 4: For cover/title sheets, look for T-prefix sheet numbers anywhere in text
         # Title sheets often have sheet numbers like T1.1, T-1, T1 without explicit "SHEET NO:" labels
-        if not sheet_number and is_cover_sheet:
-            logger.debug("Title/cover sheet detected - searching for T-prefix sheet numbers")
-            # Look for T followed by number pattern (T1.1, T-1, T1, etc.)
-            t_pattern = r'(T[-.]?\d{1,2}(?:\.\d{1,2})?)'
+        # V5.1: Also check page 1 since cover sheet detection may fail on some layouts
+        if not sheet_number and (is_cover_sheet or page_number == 1):
+            logger.debug("Title/cover sheet or page 1 detected - searching for T-prefix sheet numbers")
+            # Look for title sheet patterns: T-1, T.1, T1, T1.1, T-1.0, etc.
+            # V5.1: Use word boundaries to avoid partial matches
+            # Pattern: T followed by optional delimiter and 1-2 digits, optional decimal
+            t_pattern = r'\b(T[-.]?\d{1,2}(?:\.\d{1,2})?)\b'
             t_matches = re.findall(t_pattern, text.upper())
             if t_matches:
-                sheet_number = t_matches[0]
-                result["extraction_details"]["sheet_number"] = "title_sheet_pattern"
-                logger.debug(f"Sheet number found via title sheet pattern: {sheet_number}")
+                # Filter to reasonable title sheet numbers (max 5 chars like T-1.0)
+                valid_matches = [m for m in t_matches if len(m) <= 6]
+                if valid_matches:
+                    sheet_number = valid_matches[0]
+                    result["extraction_details"]["sheet_number"] = "title_sheet_pattern"
+                    logger.debug(f"Sheet number found via title sheet pattern: {sheet_number}")
+
+        # Fallback 4b: For page 1 with rotation applied, re-render at lower DPI and try OCR
+        # V5.1: Orientation detection can be wrong at high DPI (300 DPI)
+        # Re-rendering at 150 DPI often produces more reliable OCR results
+        if not sheet_number and page_number == 1 and rotation_applied != 0 and page is not None:
+            logger.debug("Page 1 with rotation - re-rendering at 150 DPI for OCR")
+            try:
+                import fitz
+                from core.ocr_utils import preprocess_for_ocr
+                from core.page_normalizer import PageNormalizer
+                # Re-render at lower DPI for more reliable OCR
+                matrix = fitz.Matrix(150/72, 150/72)  # 150 DPI
+                pix = page.get_pixmap(matrix=matrix)
+                low_dpi_image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                # Normalize at lower DPI (usually detects correct orientation)
+                temp_normalizer = PageNormalizer()
+                normalized_low, orient_low = temp_normalizer.normalize(low_dpi_image)
+                preprocessed = preprocess_for_ocr(normalized_low, apply_grayscale=True, apply_denoise=True)
+                original_text = pytesseract.image_to_string(preprocessed, config=TESSERACT_CONFIG['page'])
+                t_matches = re.findall(t_pattern, original_text.upper())
+                if t_matches:
+                    valid_matches = [m for m in t_matches if len(m) <= 6]
+                    if valid_matches:
+                        sheet_number = valid_matches[0]
+                        result["extraction_details"]["sheet_number"] = "low_dpi_t_pattern"
+                        logger.debug(f"Sheet number found via low-DPI T-prefix: {sheet_number}")
+            except Exception as e:
+                logger.debug(f"Low-DPI OCR failed: {e}")
+
+# DISABLED:         # Fallback 5 (V5.0): Specialized OCR for thin outline fonts
+# DISABLED:         # Many architectural drawings use outline/stroke fonts for sheet numbers
+# DISABLED:         # that standard OCR struggles with. This applies heavy dilation to thicken strokes.
+# DISABLED:         if not sheet_number and title_block_image is not None:
+# DISABLED:             logger.debug("Trying outline font OCR for sheet number")
+# DISABLED:             outline_sheet_number = self._ocr_outline_font_sheet_number(title_block_image)
+# DISABLED:             if outline_sheet_number:
+# DISABLED:                 # Validate the result
+# DISABLED:                 if re.match(r'^[A-Z]{1,3}[-.]?\d{1,3}(?:\.\d{1,2})?$', outline_sheet_number):
+# DISABLED:                     sheet_number = outline_sheet_number
+# DISABLED:                     result["extraction_details"]["sheet_number"] = "outline_font_ocr"
+# DISABLED:                     logger.debug(f"Sheet number found via outline font OCR: {sheet_number}")
+
+        # Fallback 5 (V5.0): Vertical right-edge title block OCR
+        # Some drawings (e.g., Janesville-style) have narrow vertical title blocks
+        # on the right edge where text is rotated 90 degrees
+        if not sheet_number and page_image is not None:
+            logger.debug("Trying vertical right-edge title block OCR")
+            vertical_tb_text = self._ocr_vertical_right_edge_titleblock(page_image)
+            if vertical_tb_text:
+                sheet_number = self.extract_sheet_number(vertical_tb_text, project_number, None, page)
+                if sheet_number:
+                    result["extraction_details"]["sheet_number"] = "vertical_right_edge_ocr"
+                    logger.debug(f"Sheet number found via vertical right-edge OCR: {sheet_number}")
+
+        # Fallback 6 (V5.0): Vision API for sheet numbers
+        # Use Claude's vision to read handwritten/sketch fonts that Tesseract cannot process
+        # This is the last resort fallback - only used when all other methods fail
+        if not sheet_number and title_block_image is not None:
+            if self._vision_extractor.is_available():
+                logger.debug("Trying Vision API for sheet number extraction")
+                vision_sn_result = self._vision_extractor.extract_sheet_number(title_block_image)
+                if vision_sn_result.get("sheet_number"):
+                    extracted_sn = vision_sn_result["sheet_number"].upper().strip()
+                    # Validate the result matches expected sheet number pattern
+                    if re.match(r'^[A-Z]{0,3}[-.]?\d{1,3}(?:\.\d{1,2})?$', extracted_sn):
+                        sheet_number = extracted_sn
+                        result["extraction_details"]["sheet_number"] = "vision_api"
+                        logger.debug(f"Sheet number found via Vision API: {sheet_number}")
+                    else:
+                        logger.debug(f"Vision API returned invalid sheet number format: {extracted_sn}")
+
+        # V5.1: Vision API verification for OCR-extracted sheet numbers
+        # OCR can misread similar digits (4↔7, 1↔7, 0↔6). Verify with Vision API when available.
+        # Check if we need verification: only if extracted via text-based methods (not already via Vision API)
+        current_method = result.get("extraction_details", {}).get("sheet_number", "")
+        needs_verification = (
+            sheet_number and
+            title_block_image is not None and
+            self._vision_extractor.is_available() and
+            # Verify if: no method set yet (text extraction) or method is OCR-based
+            (not current_method or current_method in ("extracted", "title_block_ocr", "page_edge_ocr"))
+        )
+
+        if needs_verification:
+            logger.debug(f"Verifying OCR-extracted sheet number '{sheet_number}' with Vision API")
+            try:
+                vision_result = self._vision_extractor.extract_sheet_number(title_block_image)
+                vision_sn = vision_result.get("sheet_number", "").upper().strip()
+                if vision_sn and vision_sn != sheet_number:
+                    # Vision API gives different result - check if it's a valid sheet number
+                    if re.match(r'^[A-Z]{0,3}[-.]?\d{1,3}(?:\.\d{1,2})?$', vision_sn):
+                        # Different but valid - trust Vision API over OCR
+                        logger.debug(f"Vision API verification: replacing '{sheet_number}' with '{vision_sn}'")
+                        sheet_number = vision_sn
+                        result["extraction_details"]["sheet_number"] = "vision_api_verified"
+            except Exception as e:
+                logger.debug(f"Vision API verification failed: {e}")
 
         result["sheet_number"] = sheet_number
         if sheet_number and "sheet_number" not in result["extraction_details"]:
@@ -721,7 +1116,7 @@ class Extractor:
                     page=page,
                     title_block_bbox_pixels=title_block_bbox_pixels
                 )
-                logger.debug(f"Layer 2: spatial_result title='{spatial_result.get('title', '')[:50]}'")
+                logger.debug(f"Layer 2: spatial_result title='{(spatial_result.get('title') or '')[:50]}'")
 
                 if spatial_result["title"]:
                     # === V4.2.2: QUALITY GATE ===
@@ -788,10 +1183,50 @@ class Extractor:
                 result["extraction_details"]["vision_status"] = "unavailable"
                 logger.warning(f"Layer 3: Vision API not available, skipping")
 
+        # Layer 3b: Vision API on vertical right-edge title block (Janesville-style)
+        # Some blueprints have vertical title blocks on the right edge with rotated text
+        if not title_found and page_image is not None:
+            if self._vision_extractor.is_available():
+                logger.debug("Layer 3b: Trying Vision API on vertical right-edge title block")
+                vertical_tb_image = self._extract_vertical_titleblock_image(page_image)
+                if vertical_tb_image is not None:
+                    vision_result = self._vision_extractor.extract_title(vertical_tb_image)
+                    logger.debug(f"Layer 3b: vision_result title='{vision_result.get('title', '')}'")
+                    if vision_result["title"]:
+                        validation_result = self._validator.validate_sheet_title(
+                            title=vision_result["title"], method="vision_api", project_number=project_number
+                        )
+                        if validation_result["is_valid"]:
+                            result["sheet_title"] = validation_result["title"]
+                            result["title_confidence"] = validation_result["confidence"]
+                            result["title_method"] = "vision_api"
+                            result["needs_review"] = validation_result["needs_review"]
+                            result["extraction_details"]["sheet_title"] = "vision_api_vertical_tb"
+                            result["extraction_details"]["vision_cached"] = vision_result.get("cached", False)
+                            title_found = True
+
         # Layer 4: Pattern matching fallback (70% confidence)
         # V4.2.4: Apply quality gate to pattern results (same as spatial)
+        # V4.8: For scanned pages (no embedded text), OCR the full page first
         if not title_found:
-            raw_title = self._extract_sheet_title(text)
+            pattern_text = text
+
+            # Check if this is a scanned page (minimal embedded text)
+            use_strict_mode = False
+            if len(text.strip()) < 100 and page_image is not None:
+                logger.debug(f"Layer 4: Scanned page detected ({len(text.strip())} chars), running full-page OCR")
+                try:
+                    ocr_text = self._ocr_engine.ocr_image(page_image)
+                    if ocr_text and len(ocr_text.strip()) > len(text.strip()):
+                        pattern_text = ocr_text
+                        use_strict_mode = True  # V4.8: Use strict mode for OCR text
+                        result["extraction_details"]["full_page_ocr"] = True
+                        result["extraction_details"]["ocr_text_length"] = len(ocr_text.strip())
+                        logger.debug(f"Layer 4: Full-page OCR produced {len(ocr_text.strip())} chars")
+                except Exception as e:
+                    logger.warning(f"Layer 4: Full-page OCR failed: {e}")
+
+            raw_title = self._extract_sheet_title(pattern_text, strict_mode=use_strict_mode)
 
             # V4.2.4: Apply quality gate to pattern results
             if raw_title:
@@ -879,12 +1314,15 @@ class Extractor:
         title = re.sub(r'\s+', ' ', title)
         return None if title.upper() in ["TITLE","SHEET TITLE","DRAWING TITLE"] else title.strip()
 
-    def _extract_sheet_title(self, text: str) -> Optional[str]:
+    def _extract_sheet_title(self, text: str, strict_mode: bool = False) -> Optional[str]:
         """
         Extract sheet title from text using pattern matching.
         V4.5: Multi-part title extraction - captures full titles like
         "FLOOR PLAN, CODE ANALYSIS, KEYNOTES AND PARTITION SCHEDULE"
         instead of just "FLOOR PLAN".
+
+        V4.8: Added strict_mode for OCR text - only returns the keyword match
+        itself without capturing additional text (which may be garbage from OCR).
         """
         if not text:
             return None
@@ -955,24 +1393,39 @@ class Extractor:
             ]
 
             for keyword in title_keywords:
-                # Find the keyword and capture everything until terminator
-                pattern = r'\b(' + keyword + r')(.*)' + terminator_pattern
-                match = re.search(pattern, text_upper, re.DOTALL)
-                if match:
-                    keyword_text = match.group(1).strip()
-                    additional_text = match.group(2).strip() if match.group(2) else ''
+                # V4.8: In strict mode (OCR), just match the keyword itself
+                if strict_mode:
+                    pattern = r'\b(' + keyword + r')\b'
+                    match = re.search(pattern, text_upper)
+                    if match:
+                        title = match.group(1).strip().title()
+                        # Normalize common acronyms
+                        title = re.sub(r'\bRcp\b', 'RCP', title)
+                        title = re.sub(r'\bHvac\b', 'HVAC', title)
+                        title = re.sub(r'\bMep\b', 'MEP', title)
+                        title = re.sub(r'\bAda\b', 'ADA', title)
+                        if title and len(title) >= 3:
+                            extracted_title = title
+                            break
+                else:
+                    # Normal mode: capture additional text until terminator
+                    pattern = r'\b(' + keyword + r')(.*)' + terminator_pattern
+                    match = re.search(pattern, text_upper, re.DOTALL)
+                    if match:
+                        keyword_text = match.group(1).strip()
+                        additional_text = match.group(2).strip() if match.group(2) else ''
 
-                    # Combine keyword with additional text using newline separator
-                    # so normalization treats them as separate parts
-                    if additional_text:
-                        full_title = keyword_text + '\n' + additional_text
-                    else:
-                        full_title = keyword_text
+                        # Combine keyword with additional text using newline separator
+                        # so normalization treats them as separate parts
+                        if additional_text:
+                            full_title = keyword_text + '\n' + additional_text
+                        else:
+                            full_title = keyword_text
 
-                    title = self._normalize_multipart_title(full_title)
-                    if title and len(title) >= 3:
-                        extracted_title = title
-                        break
+                        title = self._normalize_multipart_title(full_title)
+                        if title and len(title) >= 3:
+                            extracted_title = title
+                            break
 
         # Strategy 3: Address-adjacent extraction (fallback)
         if not extracted_title:

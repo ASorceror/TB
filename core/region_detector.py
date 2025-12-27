@@ -1,13 +1,20 @@
 """
-Blueprint Processor V4.1 - Region Detector
+Blueprint Processor V5.0 - Region Detector
 Locates title block region in normalized blueprint images.
+
+V5.0: Use LSTM-friendly preprocessing (no binarization) for OCR.
+V4.5: Dynamic region calculation based on page size.
+V4.9: Centralized find_tesseract(), added preprocessing for OCR.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from PIL import Image
 import re
+
+logger = logging.getLogger(__name__)
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -19,7 +26,10 @@ from constants import (
     TESSERACT_CONFIG,
     THRESHOLDS,
     CONFIDENCE_LEVELS,
+    DEFAULT_DPI,
+    TITLE_BLOCK_PHYSICAL,
 )
+from core.ocr_utils import find_tesseract, preprocess_for_ocr
 
 # Try to import pytesseract
 try:
@@ -27,27 +37,6 @@ try:
     TESSERACT_AVAILABLE = True
 except ImportError:
     TESSERACT_AVAILABLE = False
-
-
-def find_tesseract() -> Optional[str]:
-    """Find Tesseract executable path."""
-    import shutil
-
-    tesseract_path = shutil.which('tesseract')
-    if tesseract_path:
-        return tesseract_path
-
-    common_paths = [
-        Path('C:/Program Files/Tesseract-OCR/tesseract.exe'),
-        Path('C:/Program Files (x86)/Tesseract-OCR/tesseract.exe'),
-        Path.home() / 'AppData/Local/Programs/Tesseract-OCR/tesseract.exe',
-    ]
-
-    for path in common_paths:
-        if path.exists():
-            return str(path)
-
-    return None
 
 
 class RegionDetector:
@@ -70,15 +59,118 @@ class RegionDetector:
             if tesseract_path:
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
-    def detect_title_block(self, image: Image.Image) -> Dict[str, Any]:
+    def _calculate_dynamic_regions(
+        self,
+        width: int,
+        height: int,
+        dpi: int = DEFAULT_DPI
+    ) -> Tuple[Dict[str, Tuple[float, float, float, float]], List[str]]:
+        """
+        Calculate title block regions based on physical page size.
+
+        Standard architectural title blocks are ~6" wide x 4" tall,
+        regardless of sheet size. This calculates appropriate percentages
+        for the actual page dimensions.
+
+        Args:
+            width: Image width in pixels
+            height: Image height in pixels
+            dpi: Rendering DPI (default from constants)
+
+        Returns:
+            Tuple of (regions_dict, search_order_list)
+        """
+        # Calculate physical page dimensions
+        page_width_inches = width / dpi
+        page_height_inches = height / dpi
+
+        # Get standard title block dimensions from constants
+        tb_width = TITLE_BLOCK_PHYSICAL['width_inches']
+        tb_height = TITLE_BLOCK_PHYSICAL['height_inches']
+        max_width_pct = TITLE_BLOCK_PHYSICAL['max_width_pct']
+        max_height_pct = TITLE_BLOCK_PHYSICAL['max_height_pct']
+
+        # Calculate as percentage of page (clamped to max)
+        tb_width_pct = min(max_width_pct, tb_width / page_width_inches)
+        tb_height_pct = min(max_height_pct, tb_height / page_height_inches)
+
+        # Log the calculation for debugging
+        logger.debug(
+            f"Dynamic regions: page={page_width_inches:.1f}x{page_height_inches:.1f} inches, "
+            f"title_block={tb_width_pct*100:.1f}%x{tb_height_pct*100:.1f}%"
+        )
+
+        # Build dynamic regions - tightest first
+        regions = {
+            # Primary: tight title block region (most likely correct)
+            'bottom_right_tight': (
+                1.0 - tb_width_pct,
+                1.0 - tb_height_pct,
+                1.0,
+                1.0
+            ),
+            # Extended: 30% wider for edge cases
+            'bottom_right': (
+                1.0 - min(max_width_pct, tb_width_pct * 1.3),
+                1.0 - tb_height_pct,
+                1.0,
+                1.0
+            ),
+            # Right strip: full height for tall narrow title blocks
+            'right_strip': (
+                1.0 - tb_width_pct,
+                0.0,
+                1.0,
+                1.0
+            ),
+            # Right strip bottom: bottom half only (alternative)
+            'right_strip_bottom': (
+                1.0 - tb_width_pct,
+                0.5,
+                1.0,
+                1.0
+            ),
+            # Bottom left: for alternate formats
+            'bottom_left': (
+                0.0,
+                1.0 - tb_height_pct,
+                tb_width_pct,
+                1.0
+            ),
+            # Bottom strip: full width, reduced height
+            'bottom_strip': (
+                0.0,
+                1.0 - tb_height_pct * 0.75,
+                1.0,
+                1.0
+            ),
+        }
+
+        # Search order: tight first, then progressively wider
+        # V4.5: Added right_strip_bottom before full right_strip
+        search_order = [
+            'bottom_right_tight',
+            'bottom_right',
+            'right_strip_bottom',  # Try bottom portion first
+            'right_strip',         # Then full height
+            'bottom_left',
+            'bottom_strip',
+        ]
+
+        return regions, search_order
+
+    def detect_title_block(self, image: Image.Image, dpi: int = DEFAULT_DPI) -> Dict[str, Any]:
         """
         Detect title block region in the image.
 
         Searches candidate regions in order, scores each by keyword matches,
         and selects the highest-scoring region with >= 2 keywords.
 
+        V4.5: Uses dynamic region calculation based on page physical size.
+
         Args:
             image: Normalized PIL Image
+            dpi: DPI used for rendering (default 200)
 
         Returns:
             Dict with keys: bbox, confidence, keywords_found, region_name,
@@ -86,13 +178,16 @@ class RegionDetector:
         """
         width, height = image.size
 
+        # V4.5: Calculate dynamic regions based on page size
+        regions, search_order = self._calculate_dynamic_regions(width, height, dpi)
+
         candidates = []
         best_candidate = None
         best_score = -1
 
-        # Search regions in defined order
-        for region_name in REGION_SEARCH_ORDER:
-            region_coords = TITLE_BLOCK_REGIONS[region_name]
+        # Search regions in calculated order (tightest first)
+        for region_name in search_order:
+            region_coords = regions[region_name]
 
             # Convert relative coords to absolute pixels
             x1 = int(region_coords[0] * width)
@@ -142,15 +237,15 @@ class RegionDetector:
             confidence = CONFIDENCE_LEVELS['HIGH'] if best_candidate['keyword_count'] >= 3 else CONFIDENCE_LEVELS['MEDIUM']
             selection_reason = f"Region '{best_candidate['region_name']}' selected with {best_candidate['keyword_count']} keywords (score: {best_candidate['score']:.2f})"
         else:
-            # Default to bottom_right with LOW confidence
-            default_coords = TITLE_BLOCK_REGIONS['bottom_right']
+            # Default to bottom_right_tight (dynamic) with LOW confidence
+            default_coords = regions.get('bottom_right_tight', (0.82, 0.75, 1.0, 1.0))
             x1 = int(default_coords[0] * width)
             y1 = int(default_coords[1] * height)
             x2 = int(default_coords[2] * width)
             y2 = int(default_coords[3] * height)
 
             best_candidate = {
-                'region_name': 'bottom_right',
+                'region_name': 'bottom_right_tight',
                 'bbox': (x1, y1, x2, y2),
                 'relative_coords': default_coords,
                 'keywords_found': [],
@@ -158,7 +253,7 @@ class RegionDetector:
                 'score': 0,
             }
             confidence = CONFIDENCE_LEVELS['LOW']
-            selection_reason = "No region with >= 2 keywords found. Using default bottom_right."
+            selection_reason = "No region with >= 2 keywords found. Using default bottom_right_tight."
 
         result = {
             'bbox': best_candidate['bbox'],
@@ -173,12 +268,15 @@ class RegionDetector:
 
         return result
 
-    def _ocr_region(self, image: Image.Image) -> str:
+    def _ocr_region(self, image: Image.Image, preprocess: bool = True) -> str:
         """
-        OCR a cropped region.
+        OCR a cropped region with optional preprocessing.
+
+        V4.9: Added preprocessing for improved OCR accuracy.
 
         Args:
             image: Cropped PIL Image
+            preprocess: Whether to apply preprocessing (default: True)
 
         Returns:
             Extracted text
@@ -187,10 +285,26 @@ class RegionDetector:
             return ''
 
         try:
+            # V5.0: Use LSTM-friendly preprocessing (no binarization)
+            # Research: Tesseract LSTM does internal preprocessing, external binarization hurts accuracy
+            if preprocess:
+                processed_image = preprocess_for_ocr(
+                    image,
+                    apply_grayscale=True,
+                    apply_denoise=True,
+                    apply_border=True,
+                    border_size=10,
+                    invert_if_light_text=True,
+                    preprocessing_mode='lstm',  # Skip binarization for LSTM
+                )
+            else:
+                processed_image = image
+
             config = TESSERACT_CONFIG['title_block']
-            text = pytesseract.image_to_string(image, config=config)
+            text = pytesseract.image_to_string(processed_image, config=config)
             return text
-        except Exception:
+        except Exception as e:
+            logger.debug(f"OCR region failed: {e}")
             return ''
 
     def _count_keywords(self, text: str) -> List[str]:

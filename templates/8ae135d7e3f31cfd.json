@@ -1,0 +1,41 @@
+{
+  "template_id": "bc2fef22-22d3-4e18-a5e6-729ddcecd4c9",
+  "pdf_hash": "8ae135d7e3f31cfd",
+  "source_pdf": "2018-1203 Ellinwood GMP_Permit Set.pdf",
+  "created_at": "2025-12-24T20:03:43.757130Z",
+  "pages_analyzed": 309,
+  "quality_pages_used": 188,
+  "confidence": 0.9,
+  "title_block_bbox": [
+    0.65,
+    0.75,
+    1.0,
+    1.0
+  ],
+  "title_zone_bbox": [
+    0.0,
+    0.1,
+    1.0,
+    0.5
+  ],
+  "exclusion_patterns": [
+    "PROJECT\\s*(NUMBER|NO\\.?|#)",
+    "SHEET\\s*(NUMBER|NO\\.?|#)",
+    "DATE\\s*:?",
+    "SCALE\\s*:?",
+    "DRAWN\\s*BY",
+    "CHECKED\\s*BY",
+    "APPROVED\\s*BY",
+    "REVISION",
+    "REV\\s*:?",
+    "Floor\\ Plan,\\ General\\ Notes,\\ 1\\.\\ First\\ Floor\\ Elevation\\ \\-\\ 100'\\-0\",\\ =\\ 638\\.50\\ \\-\\ Parking,\\ Retail\\ Ffe",
+    "Reflected\\ Ceiling\\ Plan,\\ General\\ Notes,\\ Note:,\\ Arch\\ To\\ Locate\\ All\\ Sprinkler\\ Head,\\ Mech\\ Supply",
+    "Floor\\ Plan,\\ For\\ Additional\\ Locations\\ Of\\ Windows\\ That\\ Are\\ Not\\ Shown,\\ On\\ Elelvations",
+    "Wall\\ Sections,\\ Esg,\\ Esg,\\ 12/03/18,\\ Ellinwood,\\ Apartments,\\ Ellinwood,\\ Apartments",
+    "Reflected\\ Ceiling\\ Plan,\\ S\\ For\\ More\\ Information\\ On\\ Lighting\\ Layouts\\.,\\ L3"
+  ],
+  "typical_length_min": 10,
+  "typical_length_max": 120,
+  "vector_pages": 309,
+  "scanned_pages": 0
+}

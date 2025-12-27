@@ -53,3 +53,11 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Debug/temp images
+janesville_*.png
+test_ocr.png
+*.bak
+
+# Pytest cache
+.pytest_cache/

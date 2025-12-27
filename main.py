@@ -31,6 +31,12 @@ from validation.validator import Validator
 from database.operations import DatabaseOperations
 from reports.hitl_report import HITLReportGenerator
 
+# V4.3: Template Learning imports
+from core.template_learner import TemplateLearner
+from core.template_applier import TemplateApplier
+from core.template_store import TemplateStore
+from core.sibling_inference import SiblingInference
+
 
 def setup_logging(log_dir: Path) -> logging.Logger:
     """Setup logging configuration."""
@@ -66,6 +72,14 @@ class BlueprintProcessor:
         # V4.2.1: New sheet title extractor and HITL report generator
         self.title_extractor = SheetTitleExtractor(telemetry_dir=self.telemetry_dir)
         self.hitl_reporter = HITLReportGenerator()
+
+        # V4.3: Template learning components
+        self.template_learner = TemplateLearner()
+        self.template_applier = TemplateApplier()
+        self.template_store = TemplateStore(
+            templates_dir=str(self.project_root / 'templates')
+        )
+        self.sibling_inference = SiblingInference()
 
         # Setup logging
         self.logger = setup_logging(self.project_root / 'logs')
@@ -225,6 +239,13 @@ class BlueprintProcessor:
 
             results = self.apply_project_number_fallback(results)
 
+            # =========================================================================
+            # V4.3: SECOND PASS - Template Learning and Application
+            # =========================================================================
+            results = self._apply_template_learning(
+                pdf_path, pdf_hash, pdf_filename, results
+            )
+
             non_db_fields = {'errors', 'extraction_details', 'project_number_source', 'is_cover_sheet'}
             for result in results:
                 db_data = {k: v for k, v in result.items() if k not in non_db_fields}
@@ -240,7 +261,109 @@ class BlueprintProcessor:
 
         return results
 
+    def _apply_template_learning(
+        self,
+        pdf_path: Path,
+        pdf_hash: str,
+        pdf_filename: str,
+        results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        V4.3: Apply template learning to rescue failed extractions.
 
+        This is the second pass that:
+        1. Learns a template from quality extractions
+        2. Applies the template to rescue failures
+
+        Args:
+            pdf_path: Path to PDF file
+            pdf_hash: SHA-256 hash of PDF
+            pdf_filename: Name of PDF file
+            results: First pass extraction results
+
+        Returns:
+            Updated results with rescued extractions
+        """
+        try:
+            # Learn template from quality extractions
+            template = self.template_learner.learn(
+                pdf_hash=pdf_hash,
+                pdf_filename=pdf_filename,
+                extractions=results
+            )
+
+            if template is None:
+                # Not enough quality pages to learn - return first pass results
+                self.logger.info("V4.3: Not enough quality pages for template learning")
+                return results
+
+            # Save template for future use
+            self.template_store.save(template)
+            self.logger.info(
+                f"V4.3: Learned template with {template.quality_pages_used} "
+                f"quality pages, confidence={template.confidence:.2f}"
+            )
+
+            # Identify failures
+            failures = [
+                r for r in results
+                if r.get('needs_review') in [True, 1] or not r.get('sheet_title')
+            ]
+
+            if not failures:
+                self.logger.info("V4.3: No failures to rescue")
+                return results  # No failures to rescue
+
+            self.logger.info(f"V4.3: Attempting to rescue {len(failures)} failures")
+
+            # Re-open PDF for second pass
+            rescued_count = 0
+            with PDFHandler(pdf_path) as handler:
+                for result in failures:
+                    page_num = result['page_number'] - 1  # Convert to 0-indexed
+
+                    # Get page content based on type
+                    if result.get('extraction_method') == 'vector':
+                        text_blocks = handler.get_text_blocks(page_num)
+                        page_text = handler.get_page_text(page_num)
+                    else:
+                        text_blocks = None
+                        page_text = handler.get_page_text(page_num)
+
+                    # Apply template
+                    applied = self.template_applier.apply(
+                        template=template,
+                        page_text=page_text,
+                        text_blocks=text_blocks
+                    )
+
+                    # If template failed, try sibling inference
+                    if not applied['title']:
+                        applied = self.sibling_inference.infer(
+                            results=results,
+                            failed_result=result,
+                            pdf_handler=handler,
+                            template=template
+                        )
+
+                    # Update result if extraction succeeded
+                    if applied['title'] and applied['confidence'] >= 0.60:
+                        result['sheet_title'] = applied['title']
+                        result['title_confidence'] = applied['confidence']
+                        result['title_method'] = applied['method']
+                        rescued_count += 1
+
+                        # Only clear needs_review if confidence is high enough
+                        if applied['confidence'] >= 0.80:
+                            result['needs_review'] = 0
+
+            self.logger.info(f"V4.3: Rescued {rescued_count}/{len(failures)} failures")
+
+        except Exception as e:
+            self.logger.error(f"V4.3: Second pass failed: {e}")
+            # Return first-pass results - don't crash
+
+        return results
 
     def process_folder(self, folder_path: Path) -> Dict[str, Any]:
         """
@@ -325,7 +448,6 @@ class BlueprintProcessor:
 
         missing_titles = sum(1 for r in sheets if not (r.get('sheet_title') or '').strip())
         missing_sheet_numbers = sum(1 for r in sheets if not (r.get('sheet_number') or '').strip())
-        fallback_projects = sum(1 for r in sheets if r.get('project_number_source') == 'fallback')
 
         return {
             'total_pdfs': total_pdfs,
@@ -334,7 +456,6 @@ class BlueprintProcessor:
             'error_count': error_count,
             'missing_sheet_titles': missing_titles,
             'missing_sheet_numbers': missing_sheet_numbers,
-            'fallback_project_numbers': fallback_projects,
         }
 
 
@@ -441,7 +562,7 @@ class BlueprintProcessor:
             <th>PDF</th>
             <th>Page</th>
             <th>Sheet #</th>
-            <th>Project #</th>
+            <th>Sheet Title</th>
             <th>Date</th>
             <th>Discipline</th>
             <th>Method</th>
@@ -451,11 +572,15 @@ class BlueprintProcessor:
         for sheet in sheets:
             valid_class = 'valid' if sheet.get('is_valid', 0) == 1 else 'invalid'
             valid_text = 'Yes' if sheet.get('is_valid', 0) == 1 else 'No'
+            # Truncate long titles for display
+            sheet_title = sheet.get('sheet_title', '') or '-'
+            if len(sheet_title) > 60:
+                sheet_title = sheet_title[:57] + '...'
             html += f"""        <tr>
             <td>{sheet.get('pdf_filename', '')}</td>
             <td>{sheet.get('page_number', '')}</td>
             <td>{sheet.get('sheet_number', '') or '-'}</td>
-            <td>{sheet.get('project_number', '') or '-'}</td>
+            <td>{sheet_title}</td>
             <td>{sheet.get('date', '') or '-'}</td>
             <td>{sheet.get('discipline', '') or '-'}</td>
             <td>{sheet.get('extraction_method', '') or '-'}</td>

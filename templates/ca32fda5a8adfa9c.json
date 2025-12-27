@@ -1,0 +1,37 @@
+{
+  "template_id": "25434cd8-b434-45dd-b287-943588dc8593",
+  "pdf_hash": "ca32fda5a8adfa9c",
+  "source_pdf": "955 Larrabee - Issue For Pricing Drawings - 05-02-2025.pdf",
+  "created_at": "2025-12-24T11:13:23.397560Z",
+  "pages_analyzed": 315,
+  "quality_pages_used": 263,
+  "confidence": 0.9,
+  "title_block_bbox": [
+    0.65,
+    0.75,
+    1.0,
+    1.0
+  ],
+  "title_zone_bbox": [
+    0.0,
+    0.1,
+    1.0,
+    0.5
+  ],
+  "exclusion_patterns": [
+    "PROJECT\\s*(NUMBER|NO\\.?|#)",
+    "SHEET\\s*(NUMBER|NO\\.?|#)",
+    "DATE\\s*:?",
+    "SCALE\\s*:?",
+    "DRAWN\\s*BY",
+    "CHECKED\\s*BY",
+    "APPROVED\\s*BY",
+    "REVISION",
+    "REV\\s*:?",
+    "09/11/2024,\\ Permit\\ Revisions,\\ Model\\ Qr\\ Code:,\\ Panelization,\\ Issued\\ For\\ Permit,\\ Issued\\ For\\ Permit"
+  ],
+  "typical_length_min": 9,
+  "typical_length_max": 120,
+  "vector_pages": 315,
+  "scanned_pages": 0
+}

@@ -1,6 +1,11 @@
 """
-Blueprint Processor V4.7 - Sheet Title Extractor
+Blueprint Processor V6.0 - Sheet Title Extractor
 Master coordinator for the 4-layer title extraction system.
+
+V6.0 Changes:
+- Replaced RegionDetector with TitleBlockDiscovery (Vision AI-based)
+- Discovery runs once per PDF and caches results
+- More accurate title block detection using AI vision
 
 V4.7 Changes:
 - Added text_blocks retrieval and passing to extract_fields
@@ -22,7 +27,7 @@ from core.drawing_index import DrawingIndexParser
 from core.spatial_extractor import SpatialExtractor
 from core.vision_extractor import VisionExtractor
 from core.pdf_handler import PDFHandler
-from core.region_detector import RegionDetector
+from core.title_block_discovery import TitleBlockDiscovery
 from core.ocr_engine import OCREngine
 from validation.validator import Validator
 
@@ -53,12 +58,16 @@ class SheetTitleExtractor:
         """
         self._extractor = Extractor()
         self._validator = Validator()
-        self._region_detector = RegionDetector(telemetry_dir=telemetry_dir)
+        self._title_block_discovery = TitleBlockDiscovery(
+            cache_dir=telemetry_dir.parent / 'telemetry' if telemetry_dir else None,
+            telemetry_dir=telemetry_dir
+        )
         self._ocr_engine = OCREngine(telemetry_dir=telemetry_dir)
 
         # Current PDF state
         self._current_pdf_hash: Optional[str] = None
         self._drawing_index: Dict[str, str] = {}
+        self._discovery_complete: bool = False
         self._extraction_stats: Dict[str, int] = {
             'drawing_index': 0,
             'spatial': 0,
@@ -71,6 +80,7 @@ class SheetTitleExtractor:
         """Reset state for processing a new PDF."""
         self._current_pdf_hash = None
         self._drawing_index = {}
+        self._discovery_complete = False
         self._extractor.reset_for_new_pdf()
         self._extraction_stats = {
             'drawing_index': 0,
@@ -79,6 +89,44 @@ class SheetTitleExtractor:
             'pattern': 0,
             'failed': 0,
         }
+
+    def run_discovery(self, pdf_handler: PDFHandler, pdf_hash: str) -> None:
+        """
+        Run title block discovery for the PDF.
+
+        V6.0: This should be called ONCE per PDF before processing pages.
+        Results are cached, so calling multiple times is safe but unnecessary.
+
+        Args:
+            pdf_handler: PDFHandler instance
+            pdf_hash: SHA-256 hash of PDF
+
+        Raises:
+            RuntimeError: If discovery fails
+        """
+        if self._discovery_complete and self._current_pdf_hash == pdf_hash:
+            logger.debug("Discovery already complete for this PDF")
+            return
+
+        if not self._title_block_discovery.is_available():
+            raise RuntimeError(
+                "Title Block Discovery requires ANTHROPIC_API_KEY environment variable. "
+                "Discovery is REQUIRED for accurate extraction - cannot proceed without it."
+            )
+
+        logger.info(f"Running title block discovery for PDF hash {pdf_hash}")
+        self._title_block_discovery.discover(pdf_handler, pdf_hash)
+        self._discovery_complete = True
+        self._current_pdf_hash = pdf_hash
+
+        # Log discovery results
+        telemetry = self._title_block_discovery.get_current_telemetry()
+        if telemetry:
+            logger.info(f"Discovery complete: title_block={telemetry.title_block_location}, "
+                       f"confidence={telemetry.title_block_confidence:.2f}, "
+                       f"zones={list(telemetry.zones.keys())}")
+            if telemetry.page_1_is_cover_sheet:
+                logger.info(f"Page 1 is cover sheet: {telemetry.page_1_analysis}")
 
     def compute_pdf_hash(self, pdf_path: Path) -> str:
         """
@@ -158,11 +206,11 @@ class SheetTitleExtractor:
             rotation_applied = orientation_info.get('rotation_applied', 0)
 
         if page_image is not None:
-            # Detect and crop title block for Vision API
-            # V4.2.2: Always create title_block_image so Vision API can be used
-            # as fallback when spatial extraction fails quality gate
-            detection = self._region_detector.detect_title_block(page_image)
-            title_block_image = self._region_detector.crop_title_block(
+            # V6.0: Use TitleBlockDiscovery instead of RegionDetector
+            # Discovery should already be complete (run via run_discovery or process_pdf)
+            # If not, detect_title_block will return default regions
+            detection = self._title_block_discovery.detect_title_block(page_image)
+            title_block_image = self._title_block_discovery.crop_title_block(
                 page_image, detection
             )
             title_block_bbox = detection.get('bbox')
@@ -292,6 +340,8 @@ class SheetTitleExtractor:
         """
         Process an entire PDF through the extraction pipeline.
 
+        V6.0: Now runs title block discovery before processing pages.
+
         Args:
             pdf_path: Path to PDF file
             render_dpi: DPI for page rendering
@@ -308,7 +358,11 @@ class SheetTitleExtractor:
         results = []
 
         with PDFHandler(pdf_path) as handler:
-            # Parse drawing index first
+            # V6.0: Run title block discovery FIRST (before processing any pages)
+            # This is REQUIRED for accurate title block detection
+            self.run_discovery(handler, pdf_hash)
+
+            # Parse drawing index
             self.parse_drawing_index(handler)
 
             # Process each page

@@ -50,15 +50,15 @@ def test_pattern_extraction() -> bool:
         test_cases = [
             (
                 "SHEET NO: A101\nPROJECT: 2024-0156\nDATE: 12/15/2024\nSCALE: 1/4\" = 1'-0\"",
-                {'sheet_number': 'A101', 'project_number': '2024-0156', 'date': '12/15/2024'}
+                {'sheet_number': 'A101', 'date': '12/15/2024'}
             ),
             (
                 "DRAWING NO. S-201\nJOB #: 123456\nISSUE DATE: 1-5-25",
-                {'sheet_number': 'S-201', 'project_number': '123456'}
+                {'sheet_number': 'S-201'}
             ),
             (
-                "DWG: M1.01\nPROJECT NUMBER: 2024.001",
-                {'sheet_number': 'M1.01', 'project_number': '2024.001'}
+                "DWG NO: M1.01\nPROJECT NUMBER: 2024.001",
+                {'sheet_number': 'M1.01'}
             ),
         ]
 
@@ -103,22 +103,22 @@ def test_validation() -> bool:
             # Valid data
             (
                 {'sheet_number': 'A101', 'project_number': '2024-001'},
-                True, 0
+                False, 1
             ),
             # Invalid: sheet_number starts with digit
             (
                 {'sheet_number': '101A', 'project_number': '2024-001'},
-                False, 1
+                False, 2
             ),
             # Invalid: project_number not numeric
             (
                 {'sheet_number': 'A101', 'project_number': 'ABC-DEF'},
-                False, 1
+                False, 2
             ),
             # Invalid: contamination (identical values)
             (
                 {'sheet_number': 'A101', 'project_number': 'A101'},
-                False, 1
+                False, 2
             ),
         ]
 

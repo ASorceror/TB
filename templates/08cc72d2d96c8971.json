@@ -1,0 +1,36 @@
+{
+  "template_id": "05adc9ed-6481-427a-92bc-3a0cd09d8d52",
+  "pdf_hash": "08cc72d2d96c8971",
+  "source_pdf": "Baseball And Softball Locker Room Buildings_5970807_12032025.pdf",
+  "created_at": "2025-12-24T07:00:21.969412Z",
+  "pages_analyzed": 1135,
+  "quality_pages_used": 357,
+  "confidence": 0.8,
+  "title_block_bbox": [
+    0.65,
+    0.75,
+    1.0,
+    1.0
+  ],
+  "title_zone_bbox": [
+    0.0,
+    0.1,
+    1.0,
+    0.5
+  ],
+  "exclusion_patterns": [
+    "PROJECT\\s*(NUMBER|NO\\.?|#)",
+    "SHEET\\s*(NUMBER|NO\\.?|#)",
+    "DATE\\s*:?",
+    "SCALE\\s*:?",
+    "DRAWN\\s*BY",
+    "CHECKED\\s*BY",
+    "APPROVED\\s*BY",
+    "REVISION",
+    "REV\\s*:?"
+  ],
+  "typical_length_min": 11,
+  "typical_length_max": 120,
+  "vector_pages": 1135,
+  "scanned_pages": 0
+}

@@ -1,0 +1,36 @@
+{
+  "template_id": "ceb557c4-05f2-4387-80a4-127036b8bc6f",
+  "pdf_hash": "9f3874a9ef4ba08a",
+  "source_pdf": "quarry sally beauty plans 2020 05 22.pdf",
+  "created_at": "2025-12-25T15:40:17.432486Z",
+  "pages_analyzed": 15,
+  "quality_pages_used": 12,
+  "confidence": 0.9,
+  "title_block_bbox": [
+    0.65,
+    0.75,
+    1.0,
+    1.0
+  ],
+  "title_zone_bbox": [
+    0.0,
+    0.1,
+    1.0,
+    0.5
+  ],
+  "exclusion_patterns": [
+    "PROJECT\\s*(NUMBER|NO\\.?|#)",
+    "SHEET\\s*(NUMBER|NO\\.?|#)",
+    "DATE\\s*:?",
+    "SCALE\\s*:?",
+    "DRAWN\\s*BY",
+    "CHECKED\\s*BY",
+    "APPROVED\\s*BY",
+    "REVISION",
+    "REV\\s*:?"
+  ],
+  "typical_length_min": 15,
+  "typical_length_max": 80,
+  "vector_pages": 15,
+  "scanned_pages": 0
+}
