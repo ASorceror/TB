@@ -182,5 +182,11 @@ def extract_all_crops(crops_dir: Path):
 
 
 if __name__ == "__main__":
-    crops_dir = Path(r"C:\tb\blueprint_processor\output\complete_extraction\20251227_004829")
+    import argparse
+    parser = argparse.ArgumentParser(description="Extract from all saved crops")
+    parser.add_argument('--crops-dir', type=str, required=True,
+                        help='Directory containing crop folders')
+    args = parser.parse_args()
+
+    crops_dir = Path(args.crops_dir)
     extract_all_crops(crops_dir)

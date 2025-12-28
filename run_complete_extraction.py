@@ -11,6 +11,7 @@ Usage:
     python run_complete_extraction.py              # Crop + Extract (slow)
     python run_complete_extraction.py --crop-only  # Just save crops (fast)
     python run_complete_extraction.py --max-pages 50  # Limit pages per PDF
+    python run_complete_extraction.py --input-dir "path/to/pdfs"  # Custom input folder
 """
 
 import sys
@@ -27,10 +28,10 @@ from core.title_block_detector import TitleBlockDetector
 from core.vision_extractor import VisionExtractor
 
 
-def run_complete_extraction(crop_only=False, max_pages=None):
+def run_complete_extraction(crop_only=False, max_pages=None, input_dir=None):
     """Run complete extraction on all pages of all PDFs."""
 
-    test_dir = Path(r"C:\Hybrid-Extraction-Test\Test Blueprints")
+    test_dir = Path(input_dir) if input_dir else Path(r"C:\Hybrid-Extraction-Test\Test Blueprints")
     output_base = Path(r"C:\tb\blueprint_processor\output\complete_extraction")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = output_base / timestamp
@@ -232,6 +233,8 @@ if __name__ == "__main__":
                         help='Only save crops, skip extraction (fast)')
     parser.add_argument('--max-pages', type=int, default=None,
                         help='Maximum pages to process per PDF')
+    parser.add_argument('--input-dir', type=str, default=None,
+                        help='Input directory containing PDFs')
     args = parser.parse_args()
 
-    run_complete_extraction(crop_only=args.crop_only, max_pages=args.max_pages)
+    run_complete_extraction(crop_only=args.crop_only, max_pages=args.max_pages, input_dir=args.input_dir)
