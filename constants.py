@@ -76,6 +76,174 @@ DISCIPLINE_CODES: Dict[str, str] = {
 }
 
 # =============================================================================
+# SECTION 4.4.1: SHEET CATEGORIES (V6.0 Classification System)
+# Used by sheet_classifier.py to organize extracted pages by type.
+# Each category has title patterns (regex) and optional sheet number patterns.
+# =============================================================================
+SHEET_CATEGORIES: Dict[str, Dict] = {
+    'floor_plans': {
+        'folder': 'floor_plans',
+        'description': 'Floor plans and overall plans',
+        'title_patterns': [
+            r'\bfloor\s*plan',
+            r'\boverall\s*plan',
+            r'\bbuilding\s*plan',
+            r'\barea\s*plan',
+            r'\blevel\s*\d+\s*plan',
+            r'\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s*(floor|level)\s*plan',
+            r'\bbasement\s*plan',
+            r'\bmezzanine\s*plan',
+            r'\bground\s*(floor|level)\s*plan',
+            r'\bpenthouse\s*plan',
+            r'\broof\s*plan',
+            r'\bunit\s*plans?\b',  # V6.1: "Unit Plan", "Fourth Floor Unit Plan"
+        ],
+        'sheet_patterns': [
+            r'^A[1-9]0[1-9]',   # A101, A102, etc. - Floor plans
+            r'^A[1-9]1\d',      # A110-A119 - Additional floor plans
+        ],
+    },
+    'reflected_ceiling_plans': {
+        'folder': 'reflected_ceiling_plans',
+        'description': 'Reflected ceiling plans (RCP)',
+        'title_patterns': [
+            r'\breflected\s*ceiling',
+            r'\bRCP\b',
+            r'\bceiling\s*plan',
+            r'\bceiling\s*layout',
+        ],
+        'sheet_patterns': [
+            r'^A[1-9]2\d',      # A120-A129 - RCP series
+        ],
+    },
+    'room_finish_schedules': {
+        'folder': 'room_finish_schedules',
+        'description': 'Room finish schedules and finish plans',
+        'title_patterns': [
+            r'\broom\s*finish',
+            r'\bfinish\s*schedule',
+            r'\bfinish\s*plan',
+            r'\binterior\s*finish',
+            r'\bmaterial\s*schedule',
+            r'\bcolor\s*schedule',
+        ],
+        'sheet_patterns': [],
+    },
+    'interior_elevations': {
+        'folder': 'interior_elevations',
+        'description': 'Interior elevations',
+        'title_patterns': [
+            r'\binterior\s*elevation',
+            r'\bint\.?\s*elevation',
+            r'\broom\s*elevation',
+            r'\bwall\s*elevation',
+            r'\bcasework\s*elevation',
+            r'\bcabinet\s*elevation',
+            r'\bmillwork\s*elevation',
+            r'\belevation.*\binterior',
+        ],
+        'sheet_patterns': [
+            r'^A[1-9]3\d',      # A130-A139 - Interior elevations
+        ],
+    },
+    'exterior_elevations': {
+        'folder': 'exterior_elevations',
+        'description': 'Exterior elevations',
+        'title_patterns': [
+            r'\bexterior\s*elevation',
+            r'\bext\.?\s*elevation',
+            r'\bbuilding\s*elevation',
+            r'\bfront\s*elevation',
+            r'\brear\s*elevation',
+            r'\bside\s*elevation',
+            r'\b(north|south|east|west)\s*elevation',
+            r'\belevation.*\bexterior',
+            r'^elevations?$',  # V6.1: Standalone "ELEVATIONS" defaults to exterior
+        ],
+        'sheet_patterns': [
+            r'^A[2-3]0\d',      # A201-A209, A301-A309 - Exterior elevations/sections
+        ],
+    },
+    'cover_sheets': {
+        'folder': 'cover_sheets',
+        'description': 'Cover sheets, title sheets, and indexes',
+        'title_patterns': [
+            r'\bcover\s*sheet',
+            r'\btitle\s*sheet',
+            r'\bsheet\s*index',
+            r'\bdrawing\s*index',
+            r'\bgeneral\s*notes',
+            r'\bcode\s*analysis',
+            r'\bcode\s*compliance',  # V6.1: "Code Compliance"
+            r'\bproject\s*data',
+            r'\blife\s*safety',
+            r'\bada\s*',
+            r'\baccessibility',
+            r'\babbreviations',
+            r'\bsymbols?\s*legend',
+        ],
+        'sheet_patterns': [
+            r'^[AG]0',          # A001, G001, etc. - Cover/general sheets
+            r'^A-0',            # A-001, A-002 format
+        ],
+    },
+}
+
+# Categories for unclassified sheets (not in main categories)
+UNCLASSIFIED_CATEGORIES: Dict[str, Dict] = {
+    'properly_classified_not_needed': {
+        'folder': None,  # No folder - manifest only
+        'description': 'Recognized sheet types not needed for current processing',
+        'title_patterns': [
+            # Structural
+            r'\bstructural',
+            r'\bframing\s*plan',
+            r'\bfoundation\s*plan',
+            # MEP
+            r'\bmechanical',
+            r'\belectrical',
+            r'\bplumbing',
+            r'\bhvac',
+            r'\bfire\s*(protection|alarm|sprinkler)',
+            r'\bpower\s*plan',
+            r'\blighting\s*plan',
+            # Civil/Site
+            r'\bcivil',
+            r'\bsite\s*plan',
+            r'\bgrading\s*plan',
+            r'\butility\s*plan',
+            r'\blandscape',
+            r'\birrigation',
+            # Sections/Details
+            r'\bwall\s*section',
+            r'\bbuilding\s*section',
+            r'\bdetail',
+            r'\benlarged',
+            r'\bstair',
+            r'\belevator',
+            # Schedules
+            r'\bdoor\s*schedule',
+            r'\bwindow\s*schedule',
+            r'\bhardware\s*schedule',
+            r'^schedules?$',  # V6.1: Generic standalone "Schedule(s)"
+            # V6.1: Additional not-needed patterns
+            r'\bloading\s*plan',
+            r'\bdemolition\s*elevation',
+            r'\bsignage',
+            r'\bsign\s*plan',
+        ],
+        'sheet_patterns': [
+            r'^S\d',           # Structural
+            r'^M\d',           # Mechanical
+            r'^E\d',           # Electrical
+            r'^P\d',           # Plumbing
+            r'^C\d',           # Civil
+            r'^L\d',           # Landscape
+        ],
+    },
+}
+
+# =============================================================================
 # SECTION 4.5: SEARCH REGIONS (as % of image dimensions)
 # Format: (x_start, y_start, x_end, y_end) as fractions
 # =============================================================================
