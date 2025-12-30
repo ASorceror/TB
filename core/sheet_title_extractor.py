@@ -1,6 +1,11 @@
 """
-Blueprint Processor V6.2 - Sheet Title Extractor
+Blueprint Processor V6.2.2 - Sheet Title Extractor
 Master coordinator for the 4-layer title extraction system.
+
+V6.2.2 Changes:
+- Added crop orientation detection and correction using Tesseract OSD
+- Fixes crops with rotated text (e.g., CrunchFitness title blocks)
+- Crops are automatically rotated so text is readable
 
 V6.2 Changes:
 - Replaced slow TitleBlockDiscovery (Vision AI) with fast TitleBlockDetector (CV-based)
@@ -33,6 +38,7 @@ from core.vision_extractor import VisionExtractor
 from core.pdf_handler import PDFHandler
 from core.title_block_detector import TitleBlockDetector
 from core.ocr_engine import OCREngine
+from core.ocr_utils import detect_and_correct_crop_orientation
 from validation.validator import Validator
 
 logger = logging.getLogger(__name__)
@@ -140,6 +146,14 @@ class SheetTitleExtractor:
         self._detection_result = self._title_block_detector.detect(
             sample_images, strategy='balanced'
         )
+
+        # V6.2.2: Sanity check - title blocks are typically 10-20% of page width
+        # If detected width > 25%, detection is likely wrong - use default
+        MAX_TITLE_BLOCK_WIDTH = 0.25
+        if self._detection_result['width_pct'] > MAX_TITLE_BLOCK_WIDTH:
+            logger.warning(f"Detection width {self._detection_result['width_pct']*100:.1f}% exceeds max {MAX_TITLE_BLOCK_WIDTH*100:.0f}% - using default")
+            self._detection_result = {'x1': 0.85, 'width_pct': 0.15, 'method': 'default_width_exceeded'}
+
         logger.info(f"Detection complete: x1={self._detection_result['x1']:.3f}, "
                    f"width={self._detection_result['width_pct']*100:.1f}%, "
                    f"method={self._detection_result['method']}")
@@ -236,6 +250,15 @@ class SheetTitleExtractor:
             width, height = page_image.size
             x1_px = int(self._detection_result['x1'] * width)
             title_block_bbox = (x1_px, 0, width, height)
+
+            # V6.2.2: Detect and correct text orientation in crop
+            # Some PDFs have title blocks with horizontal text that needs rotation
+            title_block_image, orientation_correction = detect_and_correct_crop_orientation(
+                title_block_image
+            )
+            if orientation_correction.get('rotation_applied', 0) != 0:
+                logger.info(f"Page {page_number_1idx}: Crop rotated {orientation_correction['rotation_applied']}° "
+                           f"(confidence: {orientation_correction['confidence']:.2f})")
 
             # V6.1: Save title block crop to disk
             if self._crops_dir and title_block_image and self._current_pdf_hash:

@@ -414,3 +414,83 @@ def upscale_for_ocr(
 DEFAULT_CONFIDENCE_THRESHOLD = 60
 HIGH_CONFIDENCE_THRESHOLD = 80
 LOW_CONFIDENCE_THRESHOLD = 40
+
+# Orientation detection constants
+# V6.2.2: Lowered from 2.0 to 1.0 for crops - smaller images have less text
+# so OSD confidence is naturally lower. Consistency across pages is a stronger signal.
+MIN_ORIENTATION_CONFIDENCE = 1.0
+
+
+def detect_and_correct_crop_orientation(
+    image: Image.Image,
+    min_confidence: float = MIN_ORIENTATION_CONFIDENCE
+) -> Tuple[Image.Image, dict]:
+    """
+    Detect and correct text orientation in a title block crop.
+
+    V6.2.2: Added to fix crops where text is rotated (e.g., CrunchFitness).
+    Uses Tesseract OSD to detect orientation, then rotates if needed.
+
+    Args:
+        image: PIL Image of the crop
+        min_confidence: Minimum OSD confidence to apply rotation (default: 2.0)
+
+    Returns:
+        Tuple of (corrected_image, info_dict)
+        info_dict contains: detected_angle, confidence, rotation_applied, method
+    """
+    info = {
+        'detected_angle': 0,
+        'confidence': 0.0,
+        'rotation_applied': 0,
+        'method': 'none',
+        'original_size': image.size,
+    }
+
+    # Try Tesseract OSD
+    try:
+        import pytesseract
+        osd_output = pytesseract.image_to_osd(image)
+
+        # Parse OSD output
+        angle = 0
+        confidence = 0.0
+        for line in osd_output.split('\n'):
+            if 'Orientation in degrees:' in line:
+                angle = int(line.split(':')[1].strip())
+            elif 'Orientation confidence:' in line:
+                confidence = float(line.split(':')[1].strip())
+
+        info['detected_angle'] = angle
+        info['confidence'] = confidence
+        info['method'] = 'tesseract_osd'
+
+        # Apply rotation if confidence is sufficient and rotation is needed
+        if confidence >= min_confidence and angle != 0:
+            # PIL rotate is counterclockwise, OSD angle is how much to rotate to correct
+            # OSD angle 90 means rotate 90° counterclockwise to fix
+            # OSD angle 270 means rotate 270° counterclockwise (or 90° clockwise) to fix
+            if angle == 90:
+                corrected = image.transpose(Image.ROTATE_270)
+            elif angle == 180:
+                corrected = image.transpose(Image.ROTATE_180)
+            elif angle == 270:
+                corrected = image.transpose(Image.ROTATE_90)
+            else:
+                corrected = image
+
+            info['rotation_applied'] = angle
+            info['corrected_size'] = corrected.size
+            logger.debug(f"Crop orientation corrected: {angle}° (confidence: {confidence:.2f})")
+            return corrected, info
+
+        elif angle != 0:
+            logger.debug(f"Crop rotation skipped: {angle}° (confidence: {confidence:.2f} < {min_confidence})")
+
+    except Exception as e:
+        info['method'] = 'osd_failed'
+        info['error'] = str(e)
+        logger.debug(f"OSD failed for crop orientation: {e}")
+
+    info['corrected_size'] = image.size
+    return image, info
