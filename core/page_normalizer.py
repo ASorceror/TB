@@ -1,13 +1,21 @@
 """
-Blueprint Processor V4.9 - Page Normalizer
+Blueprint Processor V6.2.1 - Page Normalizer
 Detects orientation and rotates pages to 0 degrees.
 Implements ROTATION-FIRST principle: correct orientation BEFORE title block detection.
+
+V6.2.1 Changes:
+- Added MIN_ROTATION_CONFIDENCE threshold (2.0) to prevent false rotations
+- Low-confidence OSD detections now skip rotation instead of applying wrong angle
 
 V4.9 Changes:
 - Centralized find_tesseract() moved to ocr_utils.py
 - Added deskew_image() for small angle correction
 - Added apply_deskew parameter to normalize() method
 """
+
+# Minimum confidence required to apply rotation
+# Tesseract OSD with confidence < 2.0 is unreliable and often wrong
+MIN_ROTATION_CONFIDENCE = 2.0
 
 import json
 import logging
@@ -252,6 +260,15 @@ class PageNormalizer:
             orientation_info = self.detect_orientation(image)
 
         angle = orientation_info['angle']
+        confidence = orientation_info.get('confidence', 0.0)
+
+        # V6.2.1: Only apply rotation if confidence is above threshold
+        # Low-confidence detections are often wrong and cause more harm than good
+        if confidence < MIN_ROTATION_CONFIDENCE and angle != 0:
+            logger.debug(f"Skipping rotation (angle={angle}°, confidence={confidence:.2f} < {MIN_ROTATION_CONFIDENCE})")
+            orientation_info['rotation_skipped'] = True
+            orientation_info['skip_reason'] = f'confidence {confidence:.2f} < threshold {MIN_ROTATION_CONFIDENCE}'
+            angle = 0  # Don't rotate
 
         # Rotate image to correct orientation (90-degree increments)
         if angle == 90:
