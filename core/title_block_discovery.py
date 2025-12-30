@@ -753,13 +753,14 @@ class TitleBlockDiscovery:
         """
         if self._current_telemetry is None:
             # No discovery has been run - return default region
+            # Default: full-height strip on right side (~15% width) matching TitleBlockDetector
             logger.warning("detect_title_block called without discovery - using defaults")
             width, height = image.size
             return {
-                'bbox': (int(width * 0.65), int(height * 0.70), width, height),
+                'bbox': (int(width * 0.85), 0, width, height),
                 'confidence': 0.0,
                 'method': 'default_fallback',
-                'region_name': 'bottom_right_default',
+                'region_name': 'right_strip_default',
             }
 
         # Use telemetry to calculate bbox - AI should have found correct boundaries
@@ -807,9 +808,9 @@ class TitleBlockDiscovery:
         if bbox:
             return image.crop(bbox)
 
-        # Fallback: crop bottom-right 35% x 30%
+        # Fallback: crop right 15% full-height strip (matching TitleBlockDetector)
         width, height = image.size
-        return image.crop((int(width * 0.65), int(height * 0.70), width, height))
+        return image.crop((int(width * 0.85), 0, width, height))
 
     def get_zone_crop(
         self,

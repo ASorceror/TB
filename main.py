@@ -1,5 +1,5 @@
 """
-Blueprint Processor V4.4 - Main Entry Point
+Blueprint Processor V6.2 - Main Entry Point
 CLI interface for processing blueprints.
 
 Usage:
@@ -229,6 +229,9 @@ class BlueprintProcessor:
             self.logger.info(f"PDF hash: {pdf_hash}")
 
             with PDFHandler(pdf_path) as handler:
+                # V6.2: Run fast CV-based title block detection FIRST
+                self.title_extractor.run_discovery(handler, pdf_hash)
+
                 index_map = self.title_extractor.parse_drawing_index(handler)
                 if index_map:
                     self.logger.info(f"Drawing index: {len(index_map)} entries")
@@ -611,7 +614,7 @@ def cmd_process(args):
 
     # Print summary
     summary = results['summary']
-    print(f"\nProcessing Complete! (Blueprint Processor V4.4)")
+    print(f"\nProcessing Complete! (Blueprint Processor V6.2)")
     print(f"  PDFs processed: {summary['total_pdfs']}")
     print(f"  Pages processed: {summary['total_pages']}")
     print(f"  Successful extractions: {summary['success_count']}")
@@ -651,7 +654,7 @@ def cmd_stats(args):
     total = db.count_sheets()
     runs = db.get_processing_runs(5)
 
-    print(f"\nDatabase Statistics (V4.4):")
+    print(f"\nDatabase Statistics (V6.2):")
     print(f"  Total sheets: {total}")
     print(f"\nRecent Processing Runs:")
 
@@ -702,7 +705,7 @@ def cmd_review(args):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Blueprint Processor V4.4 - Extract data from blueprint PDFs'
+        description='Blueprint Processor V6.2 - Extract data from blueprint PDFs'
     )
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 

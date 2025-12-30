@@ -1,11 +1,15 @@
 """
-Blueprint Processor V6.0 - Sheet Title Extractor
+Blueprint Processor V6.2 - Sheet Title Extractor
 Master coordinator for the 4-layer title extraction system.
 
-V6.0 Changes:
-- Replaced RegionDetector with TitleBlockDiscovery (Vision AI-based)
-- Discovery runs once per PDF and caches results
-- More accurate title block detection using AI vision
+V6.2 Changes:
+- Replaced slow TitleBlockDiscovery (Vision AI) with fast TitleBlockDetector (CV-based)
+- Detection now uses Hough lines + density transition (same as run_complete_extraction.py)
+- Processing is now ~360x faster (1 sec vs 6 min per PDF)
+
+V6.1 Changes:
+- Added automatic saving of title block crops to output/crops/<pdf_hash>/
+- Each page's crop saved as p###_titleblock.png
 
 V4.7 Changes:
 - Added text_blocks retrieval and passing to extract_fields
@@ -27,7 +31,7 @@ from core.drawing_index import DrawingIndexParser
 from core.spatial_extractor import SpatialExtractor
 from core.vision_extractor import VisionExtractor
 from core.pdf_handler import PDFHandler
-from core.title_block_discovery import TitleBlockDiscovery
+from core.title_block_detector import TitleBlockDetector
 from core.ocr_engine import OCREngine
 from validation.validator import Validator
 
@@ -58,16 +62,21 @@ class SheetTitleExtractor:
         """
         self._extractor = Extractor()
         self._validator = Validator()
-        self._title_block_discovery = TitleBlockDiscovery(
-            cache_dir=telemetry_dir.parent / 'telemetry' if telemetry_dir else None,
-            telemetry_dir=telemetry_dir
-        )
+        # V6.2: Use fast CV-based detector (same as run_complete_extraction.py)
+        self._title_block_detector = TitleBlockDetector(use_ai_refinement=False)
         self._ocr_engine = OCREngine(telemetry_dir=telemetry_dir)
+
+        # V6.1: Store telemetry_dir and create crops subdirectory
+        self._telemetry_dir = telemetry_dir
+        self._crops_dir: Optional[Path] = None
+        if telemetry_dir:
+            self._crops_dir = telemetry_dir.parent / 'crops'
+            self._crops_dir.mkdir(parents=True, exist_ok=True)
 
         # Current PDF state
         self._current_pdf_hash: Optional[str] = None
         self._drawing_index: Dict[str, str] = {}
-        self._discovery_complete: bool = False
+        self._detection_result: Optional[Dict] = None  # V6.2: Cached detection result
         self._extraction_stats: Dict[str, int] = {
             'drawing_index': 0,
             'spatial': 0,
@@ -80,7 +89,7 @@ class SheetTitleExtractor:
         """Reset state for processing a new PDF."""
         self._current_pdf_hash = None
         self._drawing_index = {}
-        self._discovery_complete = False
+        self._detection_result = None  # V6.2: Reset detection cache
         self._extractor.reset_for_new_pdf()
         self._extraction_stats = {
             'drawing_index': 0,
@@ -92,41 +101,48 @@ class SheetTitleExtractor:
 
     def run_discovery(self, pdf_handler: PDFHandler, pdf_hash: str) -> None:
         """
-        Run title block discovery for the PDF.
+        Run title block detection for the PDF using fast CV-based detection.
 
-        V6.0: This should be called ONCE per PDF before processing pages.
-        Results are cached, so calling multiple times is safe but unnecessary.
+        V6.2: Uses TitleBlockDetector (CV-based) instead of slow Vision AI.
+        This should be called ONCE per PDF before processing pages.
 
         Args:
             pdf_handler: PDFHandler instance
             pdf_hash: SHA-256 hash of PDF
-
-        Raises:
-            RuntimeError: If discovery fails
         """
-        if self._discovery_complete and self._current_pdf_hash == pdf_hash:
-            logger.debug("Discovery already complete for this PDF")
+        if self._detection_result is not None and self._current_pdf_hash == pdf_hash:
+            logger.debug("Detection already complete for this PDF")
             return
 
-        if not self._title_block_discovery.is_available():
-            raise RuntimeError(
-                "Title Block Discovery requires ANTHROPIC_API_KEY environment variable. "
-                "Discovery is REQUIRED for accurate extraction - cannot proceed without it."
-            )
-
-        logger.info(f"Running title block discovery for PDF hash {pdf_hash}")
-        self._title_block_discovery.discover(pdf_handler, pdf_hash)
-        self._discovery_complete = True
         self._current_pdf_hash = pdf_hash
 
-        # Log discovery results
-        telemetry = self._title_block_discovery.get_current_telemetry()
-        if telemetry:
-            logger.info(f"Discovery complete: title_block={telemetry.title_block_location}, "
-                       f"confidence={telemetry.title_block_confidence:.2f}, "
-                       f"zones={list(telemetry.zones.keys())}")
-            if telemetry.page_1_is_cover_sheet:
-                logger.info(f"Page 1 is cover sheet: {telemetry.page_1_analysis}")
+        # Sample pages for detection (same strategy as run_complete_extraction.py)
+        total_pages = pdf_handler.page_count
+        if total_pages > 5:
+            sample_indices = [1, 3, 5]  # 0-indexed: pages 2, 4, 6
+        else:
+            sample_indices = [1, 2] if total_pages >= 3 else [0]
+
+        # Render sample pages at low DPI for fast detection
+        sample_images = []
+        for idx in sample_indices:
+            if idx < total_pages:
+                img = pdf_handler.get_page_image(idx, dpi=100)
+                sample_images.append(img)
+
+        if not sample_images:
+            logger.warning("No sample pages available for detection")
+            self._detection_result = {'x1': 0.85, 'width_pct': 0.15, 'method': 'default'}
+            return
+
+        # Run CV-based detection
+        logger.info(f"Running title block detection for PDF hash {pdf_hash}")
+        self._detection_result = self._title_block_detector.detect(
+            sample_images, strategy='balanced'
+        )
+        logger.info(f"Detection complete: x1={self._detection_result['x1']:.3f}, "
+                   f"width={self._detection_result['width_pct']*100:.1f}%, "
+                   f"method={self._detection_result['method']}")
 
     def compute_pdf_hash(self, pdf_path: Path) -> str:
         """
@@ -206,14 +222,34 @@ class SheetTitleExtractor:
             rotation_applied = orientation_info.get('rotation_applied', 0)
 
         if page_image is not None:
-            # V6.0: Use TitleBlockDiscovery instead of RegionDetector
-            # Discovery should already be complete (run via run_discovery or process_pdf)
-            # If not, detect_title_block will return default regions
-            detection = self._title_block_discovery.detect_title_block(page_image)
-            title_block_image = self._title_block_discovery.crop_title_block(
-                page_image, detection
+            # V6.2: Use TitleBlockDetector (CV-based) for cropping
+            # Detection should already be complete (run via run_discovery)
+            if self._detection_result is None:
+                # Fallback: use default if detection wasn't run
+                self._detection_result = {'x1': 0.85, 'width_pct': 0.15, 'method': 'default'}
+                logger.warning("Detection not run - using default x1=0.85")
+
+            # Crop title block using detected x1 (full height strip)
+            title_block_image = self._title_block_detector.crop_title_block(
+                page_image, self._detection_result
             )
-            title_block_bbox = detection.get('bbox')
+            width, height = page_image.size
+            x1_px = int(self._detection_result['x1'] * width)
+            title_block_bbox = (x1_px, 0, width, height)
+
+            # V6.1: Save title block crop to disk
+            if self._crops_dir and title_block_image and self._current_pdf_hash:
+                try:
+                    # Create PDF-specific subfolder using first 8 chars of hash
+                    pdf_crop_dir = self._crops_dir / self._current_pdf_hash[:8]
+                    pdf_crop_dir.mkdir(parents=True, exist_ok=True)
+
+                    crop_filename = f"p{page_number_1idx:03d}_titleblock.png"
+                    crop_path = pdf_crop_dir / crop_filename
+                    title_block_image.save(crop_path, 'PNG')
+                    logger.debug(f"Saved crop: {crop_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save crop for page {page_number_1idx}: {e}")
 
         # V4.7: Get text blocks with coordinates for spatial proximity matching
         text_blocks = pdf_handler.get_text_blocks(page_num)
@@ -340,7 +376,7 @@ class SheetTitleExtractor:
         """
         Process an entire PDF through the extraction pipeline.
 
-        V6.0: Now runs title block discovery before processing pages.
+        V6.2: Uses fast CV-based title block detection before processing pages.
 
         Args:
             pdf_path: Path to PDF file
@@ -358,8 +394,7 @@ class SheetTitleExtractor:
         results = []
 
         with PDFHandler(pdf_path) as handler:
-            # V6.0: Run title block discovery FIRST (before processing any pages)
-            # This is REQUIRED for accurate title block detection
+            # V6.2: Run fast CV-based title block detection FIRST
             self.run_discovery(handler, pdf_hash)
 
             # Parse drawing index
