@@ -110,16 +110,11 @@ class TitleBlockDetector:
         coarse_result = self.coarse_detector.detect(page_images, strategy=coarse_strategy)
         stages['coarse'] = coarse_result
 
-        # Get CV_transition - this is often the most reliable estimate
-        cv_transition_x1 = coarse_result.get('estimates', {}).get('cv_transition')
-
-        # Determine base x1 - prefer CV_transition if available
-        if cv_transition_x1 is not None:
-            coarse_x1 = cv_transition_x1
-            stages['using_cv_transition'] = True
-        else:
-            coarse_x1 = coarse_result['x1']
-            stages['using_cv_transition'] = False
+        # V6.2.3: Use consensus x1, not cv_transition override
+        # The consensus detector already handles method disagreement properly
+        # (prefers cv_majority when spread is high)
+        coarse_x1 = coarse_result['x1']
+        stages['consensus_method'] = coarse_result.get('method', 'unknown')
 
         # Decide if we need AI refinement
         need_refinement = (
@@ -170,9 +165,9 @@ class TitleBlockDetector:
                 final_x1 = coarse_x1
                 method = 'coarse_fallback'
         else:
-            # No AI refinement - use CV_transition based estimate
+            # No AI refinement - use consensus result
             final_x1 = coarse_x1
-            method = 'cv_transition' if stages.get('using_cv_transition') else 'coarse'
+            method = stages.get('consensus_method', 'coarse')
 
         # Calculate confidence
         confidence = self._calculate_confidence(stages, method)
