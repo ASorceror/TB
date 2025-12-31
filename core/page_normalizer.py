@@ -270,11 +270,20 @@ class PageNormalizer:
             orientation_info['skip_reason'] = f'confidence {confidence:.2f} < threshold {MIN_ROTATION_CONFIDENCE}'
             angle = 0  # Don't rotate
 
+        # V6.2.2: Skip 180° rotation for blueprints - OSD is unreliable
+        # Blueprints have text in multiple orientations which confuses OSD
+        # 180° scans are very rare, but false positives are common
+        if angle == 180:
+            logger.debug(f"Skipping 180° rotation (OSD unreliable for blueprints, conf={confidence:.2f})")
+            orientation_info['rotation_skipped'] = True
+            orientation_info['skip_reason'] = '180° rotation disabled for blueprints'
+            angle = 0
+
         # Rotate image to correct orientation (90-degree increments)
         if angle == 90:
             rotated = image.transpose(Image.ROTATE_270)
         elif angle == 180:
-            rotated = image.transpose(Image.ROTATE_180)
+            rotated = image.transpose(Image.ROTATE_180)  # Kept for completeness but won't trigger
         elif angle == 270:
             rotated = image.transpose(Image.ROTATE_90)
         else:
