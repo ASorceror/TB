@@ -147,10 +147,15 @@ class SheetTitleExtractor:
             sample_images, strategy='balanced'
         )
 
-        # V6.2.2: Sanity check - title blocks are typically 10-20% of page width
-        # If detected width > 25%, detection is likely wrong - use default
+        # V6.2.2: Sanity checks - title blocks are typically 10-20% of page width
+        # If detected width outside 10-25% range, detection is likely wrong - use default
+        MIN_TITLE_BLOCK_WIDTH = 0.10
         MAX_TITLE_BLOCK_WIDTH = 0.25
-        if self._detection_result['width_pct'] > MAX_TITLE_BLOCK_WIDTH:
+
+        if self._detection_result['width_pct'] < MIN_TITLE_BLOCK_WIDTH:
+            logger.warning(f"Detection width {self._detection_result['width_pct']*100:.1f}% below min {MIN_TITLE_BLOCK_WIDTH*100:.0f}% - using default")
+            self._detection_result = {'x1': 0.85, 'width_pct': 0.15, 'method': 'default_width_too_narrow'}
+        elif self._detection_result['width_pct'] > MAX_TITLE_BLOCK_WIDTH:
             logger.warning(f"Detection width {self._detection_result['width_pct']*100:.1f}% exceeds max {MAX_TITLE_BLOCK_WIDTH*100:.0f}% - using default")
             self._detection_result = {'x1': 0.85, 'width_pct': 0.15, 'method': 'default_width_exceeded'}
 
