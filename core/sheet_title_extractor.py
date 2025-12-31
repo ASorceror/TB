@@ -251,14 +251,15 @@ class SheetTitleExtractor:
             x1_px = int(self._detection_result['x1'] * width)
             title_block_bbox = (x1_px, 0, width, height)
 
-            # V6.2.2: Detect and correct text orientation in crop
-            # Some PDFs have title blocks with horizontal text that needs rotation
-            title_block_image, orientation_correction = detect_and_correct_crop_orientation(
-                title_block_image
-            )
-            if orientation_correction.get('rotation_applied', 0) != 0:
-                logger.info(f"Page {page_number_1idx}: Crop rotated {orientation_correction['rotation_applied']}° "
-                           f"(confidence: {orientation_correction['confidence']:.2f})")
+            # V6.2.2: DISABLED - Orientation correction was making crops upside down
+            # The OSD detection was incorrect for CrunchFitness crops
+            # TODO: Investigate why OSD detected 180° when text was already correct
+            # title_block_image, orientation_correction = detect_and_correct_crop_orientation(
+            #     title_block_image
+            # )
+            # if orientation_correction.get('rotation_applied', 0) != 0:
+            #     logger.info(f"Page {page_number_1idx}: Crop rotated {orientation_correction['rotation_applied']}° "
+            #                f"(confidence: {orientation_correction['confidence']:.2f})")
 
             # V6.1: Save title block crop to disk
             if self._crops_dir and title_block_image and self._current_pdf_hash:
