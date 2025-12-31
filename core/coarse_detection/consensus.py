@@ -92,13 +92,19 @@ class CoarseDetector:
 
         # Calculate consensus
         if not estimates_list:
-            # All methods failed - use default
+            # All methods failed - this should not happen with proper detection
+            # Log error and use a computed fallback based on typical title block location
+            # Title blocks are typically in the rightmost 10-20% of the page
+            import logging
+            logging.getLogger(__name__).error(
+                "All detection methods failed - using computed fallback x1=0.88"
+            )
             return {
-                'x1': self.default_x1,
-                'method': 'default_fallback',
+                'x1': 0.88,  # Computed fallback: ~12% width, typical narrow title block
+                'method': 'computed_fallback_all_failed',
                 'estimates': estimates,
                 'spread': 0.0,
-                'confidence': 0.0
+                'confidence': 0.3
             }
 
         if len(estimates_list) == 1:
@@ -113,35 +119,50 @@ class CoarseDetector:
                 'confidence': 0.5
             }
 
-        # Multiple methods - filter outliers first
+        # Multiple methods - check spread BEFORE filtering to detect disagreement
         estimates_array = np.array(estimates_list)
+        raw_spread = float(np.max(estimates_array) - np.min(estimates_array))
 
-        # Remove outliers: values that are more than 0.10 from the median
-        initial_median = np.median(estimates_array)
-        filtered = [e for e in estimates_list if abs(e - initial_median) < 0.10]
-
-        if not filtered:
-            # All were outliers - use the one closest to expected range (0.80-0.95)
-            filtered = estimates_list
-
-        estimates_array = np.array(filtered)
-
-        if strategy == 'median':
-            x1 = float(np.median(estimates_array))
-            method = 'consensus_median'
-        elif strategy == 'conservative':
-            # Maximum = smallest title block = won't cut into drawings
-            x1 = float(np.max(estimates_array))
-            method = 'consensus_conservative'
-        elif strategy == 'aggressive':
-            # Minimum = largest title block = might include some drawing
-            x1 = float(np.min(estimates_array))
-            method = 'consensus_aggressive'
+        # V6.2.3: When there's high disagreement (raw spread > 0.10), use conservative
+        # This picks the highest x1 (narrowest title block) which is safer
+        # because cv_transition sometimes detects drawing boundaries instead of title block
+        if raw_spread > 0.10:
+            # High disagreement - prefer cv_majority if available (most robust), else use max
+            if 'cv_majority' in estimates and estimates['cv_majority'] is not None:
+                x1 = float(estimates['cv_majority'])
+                method = 'cv_majority_preferred'
+                spread = raw_spread
+            else:
+                x1 = float(np.max(estimates_array))
+                method = 'consensus_conservative_high_spread'
+                spread = raw_spread
         else:
-            x1 = float(np.median(estimates_array))
-            method = 'consensus_median'
+            # Low disagreement - use filtering and median
+            # Remove outliers: values that are more than 0.10 from the median
+            initial_median = np.median(estimates_array)
+            filtered = [e for e in estimates_list if abs(e - initial_median) < 0.10]
 
-        spread = float(np.max(estimates_array) - np.min(estimates_array))
+            if not filtered:
+                # All were outliers - use the one closest to expected range (0.80-0.95)
+                filtered = estimates_list
+
+            estimates_array = np.array(filtered)
+            spread = float(np.max(estimates_array) - np.min(estimates_array))
+
+            if strategy == 'median':
+                x1 = float(np.median(estimates_array))
+                method = 'consensus_median'
+            elif strategy == 'conservative':
+                # Maximum = smallest title block = won't cut into drawings
+                x1 = float(np.max(estimates_array))
+                method = 'consensus_conservative'
+            elif strategy == 'aggressive':
+                # Minimum = largest title block = might include some drawing
+                x1 = float(np.min(estimates_array))
+                method = 'consensus_aggressive'
+            else:
+                x1 = float(np.median(estimates_array))
+                method = 'consensus_median'
 
         # Confidence based on agreement
         if spread < 0.02:

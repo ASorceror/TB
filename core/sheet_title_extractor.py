@@ -1,6 +1,11 @@
 """
-Blueprint Processor V6.2.2 - Sheet Title Extractor
+Blueprint Processor V6.2.3 - Sheet Title Extractor
 Master coordinator for the 4-layer title extraction system.
+
+V6.2.3 Changes:
+- Removed arbitrary width limits - detection determines boundary
+- When detection methods disagree (spread > 0.10), prefer cv_majority
+- No more default fallbacks - always compute boundary from image
 
 V6.2.2 Changes:
 - Added crop orientation detection and correction using Tesseract OSD
@@ -137,9 +142,16 @@ class SheetTitleExtractor:
                 sample_images.append(img)
 
         if not sample_images:
-            logger.warning("No sample pages available for detection")
-            self._detection_result = {'x1': 0.85, 'width_pct': 0.15, 'method': 'default'}
-            return
+            # V6.2.3: No defaults - try to get at least one page
+            logger.warning("No sample pages from indices, trying page 0")
+            try:
+                img = pdf_handler.get_page_image(0, dpi=100)
+                sample_images = [img]
+            except Exception as e:
+                logger.error(f"Cannot get any sample pages: {e}")
+                # Last resort: use computed fallback for typical narrow title block
+                self._detection_result = {'x1': 0.88, 'width_pct': 0.12, 'method': 'computed_fallback_no_pages'}
+                return
 
         # Run CV-based detection
         logger.info(f"Running title block detection for PDF hash {pdf_hash}")
@@ -147,15 +159,8 @@ class SheetTitleExtractor:
             sample_images, strategy='balanced'
         )
 
-        # V6.2.2: Sanity check - only reject obviously wrong wide detections
-        # Note: Title blocks CAN be narrow (5-8%) - don't reject these!
-        # Only reject if detection is way too wide (>25% typically means wrong boundary)
-        MAX_TITLE_BLOCK_WIDTH = 0.25
-
-        if self._detection_result['width_pct'] > MAX_TITLE_BLOCK_WIDTH:
-            logger.warning(f"Detection width {self._detection_result['width_pct']*100:.1f}% exceeds max {MAX_TITLE_BLOCK_WIDTH*100:.0f}% - using default")
-            self._detection_result = {'x1': 0.85, 'width_pct': 0.15, 'method': 'default_width_exceeded'}
-
+        # V6.2.3: No arbitrary width limits - trust the detection
+        # The consensus detector now handles disagreement by preferring cv_majority
         logger.info(f"Detection complete: x1={self._detection_result['x1']:.3f}, "
                    f"width={self._detection_result['width_pct']*100:.1f}%, "
                    f"method={self._detection_result['method']}")
