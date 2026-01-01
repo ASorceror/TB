@@ -636,3 +636,197 @@ STANDARD_EXCLUSION_PATTERNS: List[str] = [
     r'REVISION',
     r'REV\s*:?',
 ]
+
+# =============================================================================
+# SECTION 4.13: ENHANCED CLASSIFICATION SYSTEM (V7.0)
+# Three-tier classification with painting trade focus
+# =============================================================================
+
+# Classification decision thresholds
+CLASSIFICATION_THRESHOLDS = {
+    'definitely_needed': 0.85,      # Auto-include threshold
+    'definitely_not_needed': 0.85,  # Auto-exclude threshold
+    'needs_evaluation': 0.70,       # Below this -> human review
+    'conflict_penalty': 0.15,       # Penalty when signals disagree
+    'combo_page_penalty': 0.10,     # Penalty for multi-drawing pages
+    'high_confidence': 0.90,        # Very confident
+    'medium_confidence': 0.70,      # Moderately confident
+    'low_confidence': 0.50,         # Low confidence
+}
+
+# Signal weights for confidence aggregation
+# Higher weight = more influence on final decision
+SIGNAL_WEIGHTS = {
+    'drawing_index': 0.50,      # From PDF cover sheet - most authoritative
+    'title_pattern': 0.40,      # Explicit category keywords in title
+    'vision_api': 0.35,         # Visual content analysis
+    'content_analysis': 0.30,   # Inferred from drawing features
+    'sheet_number': 0.25,       # NCS discipline/type inference
+}
+
+# Painting trade relevance by category
+# Maps category names to relevance levels for painting scope of work
+PAINTING_RELEVANCE = {
+    # PRIMARY - Essential for painting trade
+    'floor_plans': 'PRIMARY',
+    'reflected_ceiling_plans': 'PRIMARY',
+    'room_finish_schedules': 'PRIMARY',
+    'interior_elevations': 'PRIMARY',
+    'finish_plans': 'PRIMARY',
+    'paint_schedules': 'PRIMARY',
+    'color_schedules': 'PRIMARY',
+    'partition_plans': 'PRIMARY',
+
+    # SECONDARY - Important reference
+    'exterior_elevations': 'SECONDARY',
+    'building_sections': 'SECONDARY',
+    'enlarged_plans': 'SECONDARY',
+    'door_schedules': 'SECONDARY',
+    'window_schedules': 'SECONDARY',
+    'wall_sections': 'SECONDARY',
+    'details': 'SECONDARY',
+
+    # REFERENCE - Useful context
+    'cover_sheets': 'REFERENCE',
+    'general_notes': 'REFERENCE',
+    'code_analysis': 'REFERENCE',
+    'life_safety': 'REFERENCE',
+    'accessibility': 'REFERENCE',
+
+    # IRRELEVANT - Not needed for painting
+    'structural': 'IRRELEVANT',
+    'mechanical': 'IRRELEVANT',
+    'electrical': 'IRRELEVANT',
+    'plumbing': 'IRRELEVANT',
+    'fire_protection': 'IRRELEVANT',
+    'civil': 'IRRELEVANT',
+    'landscape': 'IRRELEVANT',
+    'site_plans': 'IRRELEVANT',
+    'properly_classified_not_needed': 'IRRELEVANT',
+}
+
+# =============================================================================
+# SECTION 4.14: EXPANDED SHEET CATEGORIES (V7.0)
+# Additional categories for comprehensive classification
+# =============================================================================
+
+# New categories to add to SHEET_CATEGORIES
+EXPANDED_SHEET_CATEGORIES: Dict[str, Dict] = {
+    'finish_plans': {
+        'folder': 'finish_plans',
+        'description': 'Finish plans showing materials and finishes',
+        'title_patterns': [
+            r'\bfinish\s*plan',
+            r'\blower\s*level\s*finish',
+            r'\bupper\s*level\s*finish',
+            r'\bfinish\s*floor\s*plan',
+            r'\bfinish\s*layout',
+        ],
+        'sheet_patterns': [],
+    },
+    'partition_plans': {
+        'folder': 'partition_plans',
+        'description': 'Partition plans showing wall layouts',
+        'title_patterns': [
+            r'\bpartition\s*plan',
+            r'\bpartition\s*layout',
+            r'\bwall\s*layout\s*plan',
+            r'\bwall\s*type\s*plan',
+        ],
+        'sheet_patterns': [],
+    },
+    'door_schedules': {
+        'folder': 'door_schedules',
+        'description': 'Door schedules with door types and hardware',
+        'title_patterns': [
+            r'\bdoor\s*schedule',
+            r'\bdoor\s*&\s*frame\s*schedule',
+            r'\bdoor\s*type',
+            r'\bhardware\s*schedule',
+            r'\bhardware\s*set',
+        ],
+        'sheet_patterns': [],
+    },
+    'window_schedules': {
+        'folder': 'window_schedules',
+        'description': 'Window schedules with window types',
+        'title_patterns': [
+            r'\bwindow\s*schedule',
+            r'\bwindow\s*type',
+            r'\bglazing\s*schedule',
+            r'\bstorefront\s*schedule',
+        ],
+        'sheet_patterns': [],
+    },
+    'building_sections': {
+        'folder': 'building_sections',
+        'description': 'Building cross-sections',
+        'title_patterns': [
+            r'\bbuilding\s*section',
+            r'\bcross\s*section',
+            r'\blongitudinal\s*section',
+            r'\btransverse\s*section',
+            r'\btypical\s*section',
+        ],
+        'sheet_patterns': [
+            r'^A[3-4]0\d',  # A301-A309, A401-A409
+        ],
+    },
+    'wall_sections': {
+        'folder': 'wall_sections',
+        'description': 'Wall section details',
+        'title_patterns': [
+            r'\bwall\s*section',
+            r'\bexterior\s*wall\s*section',
+            r'\binterior\s*wall\s*section',
+            r'\btypical\s*wall',
+        ],
+        'sheet_patterns': [],
+    },
+    'enlarged_plans': {
+        'folder': 'enlarged_plans',
+        'description': 'Enlarged floor plans of specific areas',
+        'title_patterns': [
+            r'\benlarged\s*plan',
+            r'\benlarged\s*floor\s*plan',
+            r'\btoilet\s*room\s*plan',
+            r'\brestroom\s*plan',
+            r'\bbathroom\s*plan',
+            r'\blobby\s*plan',
+            r'\bstair\s*plan',
+            r'\belevator\s*lobby',
+            r'\bentry\s*plan',
+            r'\bvestibule\s*plan',
+        ],
+        'sheet_patterns': [
+            r'^A[4-5]0\d',  # A401-A409, A501-A509 - Enlarged views
+        ],
+    },
+    'demolition_plans': {
+        'folder': 'demolition_plans',
+        'description': 'Demolition plans showing existing conditions',
+        'title_patterns': [
+            r'\bdemolition\s*plan',
+            r'\bdemo\s*plan',
+            r'\bexisting\s*plan',
+            r'\bexisting\s*conditions',
+            r'\bexisting\s*to\s*remain',
+        ],
+        'sheet_patterns': [],
+    },
+}
+
+# Categories for content analysis triggers (when title is ambiguous)
+CONTENT_ANALYSIS_TRIGGERS = {
+    'ambiguous_title_patterns': [
+        r'^plan$',           # Just "Plan" - which type?
+        r'^elevation$',      # Just "Elevation" - interior or exterior?
+        r'^schedule$',       # Just "Schedule" - which type?
+        r'^section$',        # Just "Section" - which type?
+        r'^details?$',       # Just "Detail(s)" - which type?
+        r'^(level|floor)\s*\d+$',  # Just a level number
+    ],
+    'combo_page_detected': True,     # Trigger when combo page found
+    'low_confidence_threshold': 0.65, # Trigger when confidence below this
+    'conflict_detected': True,        # Trigger when signals conflict
+}
