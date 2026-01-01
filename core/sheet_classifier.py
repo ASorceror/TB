@@ -105,7 +105,8 @@ class SheetClassifier:
         Returns:
             ClassifiedSheet with categorization
         """
-        page_number = page_data.get('page', 0)
+        # Support both 'page' (old format) and 'page_number' (new format)
+        page_number = page_data.get('page_number', page_data.get('page', 0))
         sheet_number = page_data.get('sheet_number')
         sheet_title = page_data.get('sheet_title')
         crop_file = page_data.get('crop_file')
