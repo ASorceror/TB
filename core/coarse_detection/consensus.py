@@ -123,16 +123,17 @@ class CoarseDetector:
         estimates_array = np.array(estimates_list)
         raw_spread = float(np.max(estimates_array) - np.min(estimates_array))
 
-        # V6.2.3: When there's high disagreement (raw spread > 0.10), use conservative
-        # This picks the highest x1 (narrowest title block) which is safer
-        # because cv_transition sometimes detects drawing boundaries instead of title block
+        # V6.2.3: When there's high disagreement (raw spread > 0.10), prefer hough_lines
+        # Hough lines detects the actual BORDER LINE while CV methods detect content density
+        # CV methods get fooled by notes/text extending beyond the title block border
         if raw_spread > 0.10:
-            # High disagreement - prefer cv_majority if available (most robust), else use max
-            if 'cv_majority' in estimates and estimates['cv_majority'] is not None:
-                x1 = float(estimates['cv_majority'])
-                method = 'cv_majority_preferred'
+            # High disagreement - prefer hough_lines (detects actual border line)
+            if 'hough_lines' in estimates and estimates['hough_lines'] is not None:
+                x1 = float(estimates['hough_lines'])
+                method = 'hough_lines_preferred'
                 spread = raw_spread
             else:
+                # No hough_lines - use max (most conservative, narrowest title block)
                 x1 = float(np.max(estimates_array))
                 method = 'consensus_conservative_high_spread'
                 spread = raw_spread

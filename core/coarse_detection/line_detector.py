@@ -171,6 +171,8 @@ def detect_title_block_border(
         x1 position as fraction (0.0-1.0) or None if not found
     """
     all_line_positions = []
+    # V6.2.3: Track long lines separately - title block border spans full page height
+    long_line_positions = []
 
     for img in page_images:
         lines = find_vertical_lines(img, search_region=search_region)
@@ -180,11 +182,33 @@ def detect_title_block_border(
         for cluster in clusters:
             if cluster['total_length_pct'] > 0.3:
                 all_line_positions.append(cluster['x_avg_pct'])
+            # V6.2.3: Track very long lines (>70% page height) - likely structural borders
+            if cluster['max_length_pct'] > 0.7:
+                long_line_positions.append(cluster['x_avg_pct'])
 
     if not all_line_positions:
         return None
 
-    # Cluster line positions across pages
+    # V6.2.3: Look for very long individual lines (>70% page height)
+    # These are likely structural borders, not content lines
+    # Don't cluster - find the actual rightmost long line position
+    all_long_lines = []
+    for img in page_images:
+        lines = find_vertical_lines(img, search_region=search_region)
+        for line in lines:
+            if line['length_pct'] > 0.7:
+                all_long_lines.append(line['x_avg_pct'])
+
+    if all_long_lines:
+        # Find rightmost long line that appears consistently (within 0.01 tolerance)
+        long_positions = sorted(set(round(x, 2) for x in all_long_lines), reverse=True)
+        for pos in long_positions:
+            # Count how many pages have a long line near this position
+            count = sum(1 for x in all_long_lines if abs(x - pos) < 0.015)
+            if count >= min_agreement:
+                return pos
+
+    # Fallback: Cluster all line positions across pages
     positions = np.array(sorted(all_line_positions))
 
     # Find positions that appear in multiple pages
@@ -202,8 +226,10 @@ def detect_title_block_border(
     if not consistent_positions:
         return None
 
-    # Return the leftmost consistent position (likely title block border)
-    consistent_positions.sort(key=lambda x: x[0])
+    # V6.2.3: Return the RIGHTMOST consistent position
+    # Title block is always at the right edge, so rightmost line is the border
+    # Leftmost was picking up floor plan grid lines instead
+    consistent_positions.sort(key=lambda x: x[0], reverse=True)
     return consistent_positions[0][0]
 
 

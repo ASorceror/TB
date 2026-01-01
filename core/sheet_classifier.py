@@ -138,13 +138,32 @@ class SheetClassifier:
         Classify all sheets from extraction results.
 
         Args:
-            extraction_data: Full extraction results dict (from final_extraction_results.json)
+            extraction_data: Full extraction results dict
+                Supports two formats:
+                - Old: {"results": [{"pdf": "...", "pages": [...]}]}
+                - New: {"sheets": [{...}, {...}, ...]}
             verbose: Print progress during classification
 
         Returns:
             ClassificationResult with all categorized sheets
         """
-        results_list = extraction_data.get('results', [])
+        # Handle both old and new report formats
+        if 'results' in extraction_data:
+            # Old format: results[].pages[]
+            results_list = extraction_data.get('results', [])
+        elif 'sheets' in extraction_data:
+            # New format: sheets[] - group by pdf_filename
+            sheets = extraction_data.get('sheets', [])
+            # Convert to old format for processing
+            pdf_pages: Dict[str, List] = {}
+            for sheet in sheets:
+                pdf_name = sheet.get('pdf_filename', 'unknown')
+                if pdf_name not in pdf_pages:
+                    pdf_pages[pdf_name] = []
+                pdf_pages[pdf_name].append(sheet)
+            results_list = [{'pdf': pdf, 'pages': pages} for pdf, pages in pdf_pages.items()]
+        else:
+            results_list = []
 
         # Initialize category buckets
         categories: Dict[str, List[ClassifiedSheet]] = {

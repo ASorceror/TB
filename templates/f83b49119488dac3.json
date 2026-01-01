@@ -1,0 +1,36 @@
+{
+  "template_id": "90ec4a2a-21bc-40bd-b505-f0578799bbd1",
+  "pdf_hash": "f83b49119488dac3",
+  "source_pdf": "B8212CrunchFitness.pdf",
+  "created_at": "2026-01-01T01:33:25.469728Z",
+  "pages_analyzed": 57,
+  "quality_pages_used": 51,
+  "confidence": 0.9,
+  "title_block_bbox": [
+    0.65,
+    0.75,
+    1.0,
+    1.0
+  ],
+  "title_zone_bbox": [
+    0.0,
+    0.1,
+    1.0,
+    0.5
+  ],
+  "exclusion_patterns": [
+    "PROJECT\\s*(NUMBER|NO\\.?|#)",
+    "SHEET\\s*(NUMBER|NO\\.?|#)",
+    "DATE\\s*:?",
+    "SCALE\\s*:?",
+    "DRAWN\\s*BY",
+    "CHECKED\\s*BY",
+    "APPROVED\\s*BY",
+    "REVISION",
+    "REV\\s*:?"
+  ],
+  "typical_length_min": 9,
+  "typical_length_max": 57,
+  "vector_pages": 0,
+  "scanned_pages": 57
+}
